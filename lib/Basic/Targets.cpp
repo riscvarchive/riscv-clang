@@ -5295,6 +5295,191 @@ public:
 };
 } // end anonymous namespace.
 
+//RISCV target info
+namespace {
+  class RISCVTargetInfo : public TargetInfo {
+    static const char *const GCCRegNames[];
+
+  public:
+    RISCVTargetInfo(const std::string& triple) : TargetInfo(triple) {
+      TLSSupported = true;
+      IntWidth = IntAlign = 32;
+      LongWidth = LongAlign = 32;
+      LongLongWidth = LongLongAlign = 64;
+      PointerWidth = PointerAlign = 32;
+      FloatWidth = FloatAlign = 32;
+      DoubleWidth = DoubleAlign = 64;
+      DoubleFormat = &llvm::APFloat::IEEEdouble;
+      LongDoubleWidth = LongDoubleAlign = 64;
+      LongDoubleFormat = &llvm::APFloat::IEEEdouble;
+      MinGlobalAlign = 8;
+      DescriptionString = "E-p:32:32:32-i1:8:16-i8:8:16-i16:16-i32:32-"
+       "f32:32-a0:8:16-n32";
+      MaxAtomicPromoteWidth = MaxAtomicInlineWidth = 32;
+    }
+    virtual void getTargetDefines(const LangOptions &Opts,
+                                  MacroBuilder &Builder) const {
+      // Target identification
+      Builder.defineMacro("__riscv__");
+      // Target properties
+    }
+    virtual void getTargetBuiltins(const Builtin::Info *&Records,
+                                   unsigned &NumRecords) const {
+      // TODO: Implement.
+      Records = 0;
+      NumRecords = 0;
+    }
+
+    virtual void getGCCRegNames(const char *const *&Names,
+                                unsigned &NumNames) const;
+    virtual void getGCCRegAliases(const GCCRegAlias *&Aliases,
+                                  unsigned &NumAliases) const {
+    static const TargetInfo::GCCRegAlias GCCRegAliases[] = {
+      { { "zero" },    "x0" },
+      { { "ra" },      "x1" },
+      { { "s0","fp" }, "x2" },
+      { { "s1" },      "x3" },
+      { { "s2" },      "x4" },
+      { { "s3" },      "x5" },
+      { { "s4" },      "x6" },
+      { { "s5" },      "x7" },
+      { { "s6" },      "x8" },
+      { { "s7" },      "x9" },
+      { { "s8" },      "x10" },
+      { { "s9" },      "x11" },
+      { { "s10"},      "x12" },
+      { { "s11"},      "x13" },
+      { { "sp" },      "x14" },
+      { { "tp" },      "x15" },
+      { { "v0" },      "x16" },
+      { { "v1" },      "x17" },
+      { { "a0" },      "x18" },
+      { { "a1" },      "x19" },
+      { { "a2" },      "x20" },
+      { { "a3" },      "x21" },
+      { { "a4" },      "x22" },
+      { { "a5" },      "x23" },
+      { { "a6" },      "x24" },
+      { { "a7" },      "x25" },
+      { { "a8" },      "x26" },
+      { { "a9" },      "x27" },
+      { { "a10"},      "x28" },
+      { { "a11"},      "x29" },
+      { { "a12"},      "x30" },
+      { { "a13"},      "x31" },
+      //FP
+      { { "fs0" }, "f0" },
+      { { "fs1" }, "f1" },
+      { { "fs2" }, "f2" },
+      { { "fs3" }, "f3" },
+      { { "fs4" }, "f4" },
+      { { "fs5" }, "f5" },
+      { { "fs6" }, "f6" },
+      { { "fs7" }, "f7" },
+      { { "fs8" }, "f8" },
+      { { "fs9" }, "f9" },
+      { { "fs10"}, "f10" },
+      { { "fs11"}, "f11" },
+      { { "fs12"}, "f12" },
+      { { "fs13"}, "f13" },
+      { { "fs14"}, "f14" },
+      { { "fs15"}, "f15" },
+      { { "fv0" }, "f16" },
+      { { "fv1" }, "f17" },
+      { { "fa0" }, "f18" },
+      { { "fa1" }, "f19" },
+      { { "fa2" }, "f20" },
+      { { "fa3" }, "f21" },
+      { { "fa4" }, "f22" },
+      { { "fa5" }, "f23" },
+      { { "fa6" }, "f24" },
+      { { "fa7" }, "f25" },
+      { { "fa8" }, "f26" },
+      { { "fa9" }, "f27" },
+      { { "fa10"}, "f28" },
+      { { "fa11"}, "f29" },
+      { { "fa12"}, "f30" },
+      { { "fa13"}, "f31" }
+    };
+
+      Aliases = GCCRegAliases;
+      NumAliases = llvm::array_lengthof(GCCRegAliases);
+    }
+    virtual bool validateAsmConstraint(const char *&Name,
+                                       TargetInfo::ConstraintInfo &info) const;
+    virtual const char *getClobbers() const {
+      // FIXME: Implement!
+      return "";
+    }
+    virtual BuiltinVaListKind getBuiltinVaListKind() const {
+      return TargetInfo::VoidPtrBuiltinVaList;
+    }
+  };
+
+  const char *const RISCVTargetInfo::GCCRegNames[] = {
+    "x0" ,  "x1",  "x2" , "x3" , "x4" , "x5" , "x6" , "x7" ,
+    "x8" ,  "x9",  "x10", "x11", "x12", "x13", "x14", "x15",
+    "x16", "x17",  "x18", "x19", "x20", "x21", "x22", "x23",
+    "x24", "x25",  "x26", "x27", "x28", "x29", "x30", "x31",
+    "f0" , "f1" ,  "f2" , "f3" , "f4" , "f5" , "f6" , "f7" ,
+    "f8" , "f9" ,  "f10", "f11", "f12", "f13", "f14", "f15",
+    "f16", "f17",  "f18", "f19", "f20", "f21", "f22", "f23",
+    "f24", "f25",  "f26", "f27", "f28", "f29", "f30", "f31"
+  };
+
+  void RISCVTargetInfo::getGCCRegNames(const char *const *&Names,
+                                         unsigned &NumNames) const {
+    Names = GCCRegNames;
+    NumNames = llvm::array_lengthof(GCCRegNames);
+  }
+
+  bool RISCVTargetInfo::
+  validateAsmConstraint(const char *&Name,
+                        TargetInfo::ConstraintInfo &Info) const {
+    switch (*Name) {
+    default:
+      return false;
+
+    //Full Listing from riscv-gcc/gcc/config/riscv/constraints.md
+    //A -vector integer reg
+    //B -vector float reg
+    //d -equivalent to r
+    //f -float reg
+    //h -not supported
+    //b -internal (all regs)
+    //j -internal (v1_reg)
+    //z -float condition code reg (gr_regs)
+    //Z -internal (constant 1?)
+    //I -I-type signed 12bit immediate
+    //J -integer zero (constant 0)
+    //G -float zero 
+    //Q -internal (const_arith_operand)
+    //YR-an address that is held in a gpr
+    //R -an address that can be used in a non-macro load store
+    //S -internal - a constant call adress
+    //T -internal - a constant mover_operand
+    //W -internal - a mem address based on a base reg
+    //YG-internal - a vector zero
+    //
+    //For generic constraints see gccs simple constraints doc
+
+    case 'r': // CPU register
+    case 'd': // Data register (equivalent to 'r')
+    case 'f': // Floating-point register
+      Info.setAllowsRegister();
+      return true;
+
+    case 'I': // signed 12-bit constant
+    case 'J': // constant zero
+      return true;
+
+    case 'R': // an address that can be used in a non-mcaro load or store
+      Info.setAllowsMemory();
+      return true;
+    }
+  }
+}//end RISCV target info
+
 namespace {
 class SystemZTargetInfo : public TargetInfo {
   static const char *const GCCRegNames[];
@@ -6612,6 +6797,14 @@ static TargetInfo *AllocateTarget(const llvm::Triple &Triple) {
       return new FreeBSDTargetInfo<SparcV9TargetInfo>(Triple);
     default:
       return new SparcV9TargetInfo(Triple);
+    }
+
+  case llvm::Triple::riscv:
+    switch (os) {
+    case llvm::Triple::Linux:
+      return new LinuxTargetInfo<RISCVTargetInfo>(T);
+    default:
+      return new RISCVTargetInfo(T);
     }
 
   case llvm::Triple::systemz:

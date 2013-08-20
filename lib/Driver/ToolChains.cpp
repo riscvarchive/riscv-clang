@@ -1363,6 +1363,12 @@ bool Generic_GCC::GCCInstallationDetector::getBiarchSibling(Multilib &M) const {
   static const char *const SPARCv9Triples[] = { "sparc64-linux-gnu",
                                                 "sparcv9-linux-gnu" };
 
+  static const char *const RISCVLibDirs[] = { "/lib64", "/lib" };
+  static const char *const RISCVTriples[] = {
+    "riscv-linux-gnu",
+    "riscv-unknown-linux-gnu"
+  };
+
   static const char *const SystemZLibDirs[] = { "/lib64", "/lib" };
   static const char *const SystemZTriples[] = {
     "s390x-linux-gnu", "s390x-unknown-linux-gnu", "s390x-ibm-linux-gnu",
@@ -1475,6 +1481,12 @@ bool Generic_GCC::GCCInstallationDetector::getBiarchSibling(Multilib &M) const {
     TripleAliases.append(begin(SPARCv9Triples), end(SPARCv9Triples));
     BiarchLibDirs.append(begin(SPARCv8LibDirs), end(SPARCv8LibDirs));
     BiarchTripleAliases.append(begin(SPARCv8Triples), end(SPARCv8Triples));
+    break;
+  case llvm::Triple::riscv:
+    LibDirs.append(
+      RISCVLibDirs, RISCVLibDirs + llvm::array_lengthof(RISCVLibDirs));
+    TripleAliases.append(
+      RISCVTriples, RISCVTriples + llvm::array_lengthof(RISCVTriples));
     break;
   case llvm::Triple::systemz:
     LibDirs.append(begin(SystemZLibDirs), end(SystemZLibDirs));
