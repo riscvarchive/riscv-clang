@@ -1146,6 +1146,12 @@ Generic_GCC::GCCInstallationDetector::GCCInstallationDetector(
     "ppc64-redhat-linux"
   };
 
+  static const char *const RISCVLibDirs[] = { "/lib64", "/lib" };
+  static const char *const RISCVTriples[] = {
+    "riscv-linux-gnu",
+    "riscv-unknown-linux-gnu"
+  };
+
   static const char *const SystemZLibDirs[] = { "/lib64", "/lib" };
   static const char *const SystemZTriples[] = {
     "s390x-linux-gnu",
@@ -1254,6 +1260,12 @@ Generic_GCC::GCCInstallationDetector::GCCInstallationDetector(
       PPCLibDirs, PPCLibDirs + llvm::array_lengthof(PPCLibDirs));
     MultiarchTripleAliases.append(
       PPCTriples, PPCTriples + llvm::array_lengthof(PPCTriples));
+    break;
+  case llvm::Triple::riscv:
+    LibDirs.append(
+      RISCVLibDirs, RISCVLibDirs + llvm::array_lengthof(RISCVLibDirs));
+    TripleAliases.append(
+      RISCVTriples, RISCVTriples + llvm::array_lengthof(RISCVTriples));
     break;
   case llvm::Triple::systemz:
     LibDirs.append(
