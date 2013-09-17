@@ -5299,23 +5299,24 @@ public:
 namespace {
   class RISCVTargetInfo : public TargetInfo {
     static const char *const GCCRegNames[];
+    std::string CPU;
 
   public:
     RISCVTargetInfo(const std::string& triple) : TargetInfo(triple) {
       TLSSupported = true;
       IntWidth = IntAlign = 32;
-      LongWidth = LongAlign = 32;
       LongLongWidth = LongLongAlign = 64;
-      PointerWidth = PointerAlign = 32;
       FloatWidth = FloatAlign = 32;
       DoubleWidth = DoubleAlign = 64;
       DoubleFormat = &llvm::APFloat::IEEEdouble;
       LongDoubleWidth = LongDoubleAlign = 64;
       LongDoubleFormat = &llvm::APFloat::IEEEdouble;
       MinGlobalAlign = 8;
-      DescriptionString = "E-p:32:32:32-i1:8:16-i8:8:16-i16:16-i32:32-"
-       "f32:32-a0:8:16-n32";
       MaxAtomicPromoteWidth = MaxAtomicInlineWidth = 32;
+    }
+    virtual bool setCPU(const std::string &Name) {
+      CPU = Name;
+      return true;
     }
     virtual void getTargetDefines(const LangOptions &Opts,
                                   MacroBuilder &Builder) const {
@@ -5405,6 +5406,31 @@ namespace {
       Aliases = GCCRegAliases;
       NumAliases = llvm::array_lengthof(GCCRegAliases);
     }
+    virtual bool setFeatureEnabled(llvm::StringMap<bool> &Features,
+                                             StringRef Name,
+                                             bool Enabled) const {
+    if (Name == "m" || Name == "a" || Name == "f" ||
+        Name == "d" || Name == "rv32" || Name == "rv64") { 
+      Features[Name] = Enabled;
+      return true;
+    }
+  
+    return false;
+  }
+  virtual void HandleTargetFeatures(std::vector<std::string> &Features) {
+    for (unsigned i = 0, e = Features.size(); i != e; ++i)
+      if (Features[i] == "+rv64"){
+        DescriptionString = ("E-p:64:64:64-i1:8:16-i8:8:16-i16:16-i32:32-i64:64-"
+         "f32:32-f64:64-f128:128-n32:64");
+        PointerWidth = PointerAlign = 64;
+        LongWidth = LongAlign = 64;
+      } else if (Features[i] == "+rv32"){
+        DescriptionString = ("E-p:32:32:32-i1:8:16-i8:8:16-i16:16-i32:32-"
+         "f32:32-a0:8:16-n32");
+        PointerWidth = PointerAlign = 32;
+        LongWidth = LongAlign = 32;
+      }
+  }
     virtual bool validateAsmConstraint(const char *&Name,
                                        TargetInfo::ConstraintInfo &info) const;
     virtual const char *getClobbers() const {
