@@ -50,6 +50,7 @@ namespace tools {
     void AddARMTargetArgs(const ArgList &Args, ArgStringList &CmdArgs,
                           bool KernelOrKext) const;
     void AddMIPSTargetArgs(const ArgList &Args, ArgStringList &CmdArgs) const;
+    void AddRISCVTargetArgs(const ArgList &Args, ArgStringList &CmdArgs) const;
     void AddPPCTargetArgs(const ArgList &Args, ArgStringList &CmdArgs) const;
     void AddR600TargetArgs(const ArgList &Args, ArgStringList &CmdArgs) const;
     void AddSparcTargetArgs(const ArgList &Args, ArgStringList &CmdArgs) const;
