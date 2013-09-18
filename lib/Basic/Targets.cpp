@@ -5421,7 +5421,7 @@ namespace {
     for (unsigned i = 0, e = Features.size(); i != e; ++i)
       if (Features[i] == "+rv64"){
         DescriptionString = ("E-p:64:64:64-i1:8:16-i8:8:16-i16:16-i32:32-i64:64-"
-         "f32:32-f64:64-f128:128-n32:64");
+         "f64:64-f128:128-n32:64");
         PointerWidth = PointerAlign = 64;
         LongWidth = LongAlign = 64;
       } else if (Features[i] == "+rv32"){
