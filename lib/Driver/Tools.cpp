@@ -1243,7 +1243,7 @@ static void getRISCVTargetCPU(const ArgList &Args,
   }
 
   StringRef MArch;
-  if (Arg *A = Args.getLastArg(options::OPT_march_EQ)) {
+  if (Arg *A = Args.getLastArg(options::OPT_mriscv_EQ)) {
     // Otherwise, if we have -march= choose the base CPU for that arch.
     MArch = A->getValue();
   } else {
