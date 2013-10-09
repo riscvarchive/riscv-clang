@@ -5321,6 +5321,7 @@ namespace {
     virtual void getTargetDefines(const LangOptions &Opts,
                                   MacroBuilder &Builder) const {
       // Target identification
+      Builder.defineMacro("__riscv");
       Builder.defineMacro("__riscv__");
       // Target properties
     }
@@ -5400,7 +5401,40 @@ namespace {
       { { "fa10"}, "f28" },
       { { "fa11"}, "f29" },
       { { "fa12"}, "f30" },
-      { { "fa13"}, "f31" }
+      { { "fa13"}, "f31" },
+      //PCR
+      { { "sup0","k0" }, "cr0" },
+      { { "sup0","k1" }, "cr1" },
+      { { "epc" }, "cr2" },
+      { { "badvaddr" }, "cr3" },
+      { { "ptbr" }, "cr4" },
+      { { "asid" }, "cr5" },
+      { { "count" }, "cr6" },
+      { { "compare" }, "cr7" },
+      { { "evec" }, "cr8" },
+      { { "cause" }, "cr9" },
+      { { "status"}, "cr10" },
+      { { "hartid"}, "cr11" },
+      { { "impl"}, "cr12" },
+      { { "fatc"}, "cr13" },
+      { { "send_ipi"}, "cr14" },
+      { { "recv_ipi"}, "cr15" },
+      { { "pcr0" }, "cr16" },
+      { { "pcr1" }, "cr17" },
+      { { "pcr2" }, "cr18" },
+      { { "pcr3" }, "cr19" },
+      { { "pcr4" }, "cr20" },
+      { { "pcr5" }, "cr21" },
+      { { "pcr6" }, "cr22" },
+      { { "pcr7" }, "cr23" },
+      { { "pcr8" }, "cr24" },
+      { { "pcr9" }, "cr25" },
+      { { "pcr10" }, "cr26" },
+      { { "pcr11" }, "cr27" },
+      { { "pcr12"}, "cr28" },
+      { { "pcr13"}, "cr29" },
+      { { "tohost"}, "cr30" },
+      { { "fromhost"}, "cr31" }
     };
 
       Aliases = GCCRegAliases;
@@ -5443,14 +5477,18 @@ namespace {
   };
 
   const char *const RISCVTargetInfo::GCCRegNames[] = {
-    "x0" ,  "x1",  "x2" , "x3" , "x4" , "x5" , "x6" , "x7" ,
-    "x8" ,  "x9",  "x10", "x11", "x12", "x13", "x14", "x15",
-    "x16", "x17",  "x18", "x19", "x20", "x21", "x22", "x23",
-    "x24", "x25",  "x26", "x27", "x28", "x29", "x30", "x31",
-    "f0" , "f1" ,  "f2" , "f3" , "f4" , "f5" , "f6" , "f7" ,
-    "f8" , "f9" ,  "f10", "f11", "f12", "f13", "f14", "f15",
-    "f16", "f17",  "f18", "f19", "f20", "f21", "f22", "f23",
-    "f24", "f25",  "f26", "f27", "f28", "f29", "f30", "f31"
+    "x0"  ,  "x1" ,  "x2"  , "x3"  , "x4"  , "x5"  , "x6"  , "x7"  ,
+    "x8"  ,  "x9" ,  "x10" , "x11" , "x12" , "x13" , "x14" , "x15" ,
+    "x16" , "x17" ,  "x18" , "x19" , "x20" , "x21" , "x22" , "x23" ,
+    "x24" , "x25" ,  "x26" , "x27" , "x28" , "x29" , "x30" , "x31" ,
+    "f0"  , "f1"  ,  "f2"  , "f3"  , "f4"  , "f5"  , "f6"  , "f7"  ,
+    "f8"  , "f9"  ,  "f10" , "f11" , "f12" , "f13" , "f14" , "f15" ,
+    "f16" , "f17" ,  "f18" , "f19" , "f20" , "f21" , "f22" , "f23" ,
+    "f24" , "f25" ,  "f26" , "f27" , "f28" , "f29" , "f30" , "f31" ,
+    "cr0" , "cr1" ,  "cr2" , "cr3" , "cr4" , "cr5" , "cr6" , "cr7" ,
+    "cr8" , "cr9" ,  "cr10", "cr11", "cr12", "cr13", "cr14", "cr15",
+    "cr16", "cr17",  "cr18", "cr19", "cr20", "cr21", "cr22", "cr23",
+    "cr24", "cr25",  "cr26", "cr27", "cr28", "cr29", "cr30", "cr31"
   };
 
   void RISCVTargetInfo::getGCCRegNames(const char *const *&Names,
