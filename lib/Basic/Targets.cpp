@@ -5323,6 +5323,8 @@ namespace {
       // Target identification
       Builder.defineMacro("__riscv");
       Builder.defineMacro("__riscv__");
+
+      Builder.defineMacro("__riscv64");
       // Target properties
     }
     virtual void getTargetBuiltins(const Builtin::Info *&Records,
