@@ -5359,7 +5359,7 @@ llvm::Value *RISCVABIInfo::EmitVAArg(llvm::Value *VAListAddr, QualType Ty,
     AddrTyped = Builder.CreateBitCast(Addr, PTy);  
 
   llvm::Value *AlignedAddr = Builder.CreateBitCast(AddrTyped, BP);
-  TypeAlign = std::max((unsigned)TypeAlign, (unsigned) 4);//4===MinABIStackAlignInBytes
+  TypeAlign = std::max((unsigned)TypeAlign, (unsigned) 8);//4===MinABIStackAlignInBytes
   uint64_t Offset =
     llvm::RoundUpToAlignment(CGF.getContext().getTypeSize(Ty) / 8, TypeAlign);
   llvm::Value *NextAddr =
