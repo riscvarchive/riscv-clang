@@ -5411,8 +5411,11 @@ ABIArgInfo RISCVABIInfo::classifyArgumentType(QualType Ty) const {
         PassTy = llvm::Type::getFloatTy(getVMContext());
       else
         PassTy = llvm::Type::getDoubleTy(getVMContext());
-    } else
+    } else{
+      if(Size == 0)
+        return ABIArgInfo::getIgnore();//ignore empty args
       PassTy = llvm::IntegerType::get(getVMContext(), Size);
+    }
     return ABIArgInfo::getDirect(PassTy);
   }
 
