@@ -5333,6 +5333,21 @@ namespace {
       Records = 0;
       NumRecords = 0;
     }
+    virtual void getDefaultFeatures(llvm::StringMap<bool> &Features) const {
+      if (CPU.find("RV32") == 0){
+          setFeatureEnabled(Features, "rv32", true);
+      }else if(CPU.find("RV64") == 0){
+          setFeatureEnabled(Features, "rv64", true);
+      }
+      if(CPU.find("M") != std::string::npos)
+        setFeatureEnabled(Features, "m", true);
+      if(CPU.find("A") != std::string::npos)
+        setFeatureEnabled(Features, "a", true);
+      if(CPU.find("F") != std::string::npos)
+        setFeatureEnabled(Features, "f", true);
+      if(CPU.find("D") != std::string::npos)
+        setFeatureEnabled(Features, "d", true);
+    }
 
     virtual void getGCCRegNames(const char *const *&Names,
                                 unsigned &NumNames) const;
@@ -5454,7 +5469,7 @@ namespace {
     return false;
   }
   virtual void HandleTargetFeatures(std::vector<std::string> &Features) {
-    for (unsigned i = 0, e = Features.size(); i != e; ++i)
+    for (unsigned i = 0, e = Features.size(); i != e; ++i){
       if (Features[i] == "+rv64"){
         DescriptionString = ("e-p:64:64:64-i1:8:16-i8:8:16-i16:16-i32:32-i64:64-"
          "f64:64-f128:128-n32:64");
@@ -5466,6 +5481,7 @@ namespace {
         PointerWidth = PointerAlign = 32;
         LongWidth = LongAlign = 32;
       }
+    }
   }
     virtual bool validateAsmConstraint(const char *&Name,
                                        TargetInfo::ConstraintInfo &info) const;
