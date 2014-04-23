@@ -1050,7 +1050,7 @@ static void parseRISCVExtensions(StringRef exts, ArgStringList &CmdArgs) {
 static void getRISCVTargetCPU(const ArgList &Args,
                               ArgStringList &CmdArgs,
                                      const llvm::Triple &Triple) {
-  // FIXME: Warn on inconsistent use of -mcpu and -march.
+  // FIXME: Warn on inconsistent use of -mcpu and -mriscv
 
   // If we have -mcpu=, use that.
   if (Arg *A = Args.getLastArg(options::OPT_mcpu_EQ)) {
@@ -1072,6 +1072,8 @@ static void getRISCVTargetCPU(const ArgList &Args,
   if(MArch.startswith("RV32")) {
     CmdArgs.push_back("-target-feature");
     CmdArgs.push_back("+rv32");
+    CmdArgs.push_back("-target-feature");
+    CmdArgs.push_back("-rv64");
     parseRISCVExtensions(MArch.drop_front(4), CmdArgs);
   }else if(MArch.startswith("RV64")) {
     CmdArgs.push_back("-target-feature");
@@ -1086,7 +1088,6 @@ static void getRISCVTargetCPU(const ArgList &Args,
 
 void Clang::AddRISCVTargetArgs(const ArgList &Args,
                               ArgStringList &CmdArgs) const {
-  const Driver &D = getToolChain().getDriver();
   llvm::Triple Triple = getToolChain().getTriple();
 
   // Set the CPU based on -march= and -mcpu=.
@@ -6029,6 +6030,18 @@ void gnutools::Link::ConstructJob(Compilation &C, const JobAction &JA,
       CmdArgs.push_back("elf32ltsmipn32");
     else
       CmdArgs.push_back("elf64ltsmip");
+  }
+  else if (ToolChain.getArch() == llvm::Triple::riscv) {
+    StringRef cpu = "";
+    if (Arg *A = Args.getLastArg(options::OPT_mriscv_EQ))
+      cpu = A->getValue();
+    if (Arg *A = Args.getLastArg(options::OPT_mcpu_EQ))
+      cpu = A->getValue();
+
+    if(cpu.find("RV32")!= std::string::npos)
+      CmdArgs.push_back("elf32lriscv");
+    else //Default to RV64
+      CmdArgs.push_back("elf64lriscv");
   }
   else if (ToolChain.getArch() == llvm::Triple::systemz)
     CmdArgs.push_back("elf64_s390");
