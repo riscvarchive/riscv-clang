@@ -13,7 +13,7 @@ If you're interested in more (including how to build Clang) it is best to read
 the relevant web sites.  Here are some pointers:
 
 | Description | Website |
-|
+|-------------|---------|
 | Information on Clang: | http://clang.llvm.org/ |
 | Building and using Clang: | http://clang.llvm.org/get_started.html |
 | Clang Static Analyzer: | http://clang-analyzer.llvm.org/ |
