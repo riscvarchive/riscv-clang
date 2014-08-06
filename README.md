@@ -1,5 +1,5 @@
-##C Language Family Front-end
-
+C Language Family Front-end
+====================================================================
 
 Welcome to Clang.  This is a compiler front-end for the C family of languages
 (C, C++, Objective-C, and Objective-C++) which is built as part of the LLVM
@@ -14,10 +14,10 @@ the relevant web sites.  Here are some pointers:
 
 | Description | Website |
 |-------------|---------|
-| Information on Clang: | http://clang.llvm.org/ |
-| Building and using Clang: | http://clang.llvm.org/get_started.html |
-| Clang Static Analyzer: | http://clang-analyzer.llvm.org/ |
-| Information on the LLVM project: | http://llvm.org/ |
+| Information on Clang:             | http://clang.llvm.org/ |
+| Building and using Clang:         | http://clang.llvm.org/get_started.html |
+| Clang Static Analyzer:            | http://clang-analyzer.llvm.org/ |
+| Information on the LLVM project:  | http://llvm.org/ |
 
 If you have questions or comments about Clang, a great place to discuss them is
 on the Clang development mailing list:  
