@@ -5324,8 +5324,11 @@ namespace {
       Builder.defineMacro("__riscv");
       Builder.defineMacro("__riscv__");
 
-      Builder.defineMacro("__riscv64");
+      if(PointerWidth == 64){
+        Builder.defineMacro("__riscv64");
+      }
       // Target properties
+      Builder.defineMacro("_RISCV_SZPTR", Twine((int)PointerWidth));
     }
     virtual void getTargetBuiltins(const Builtin::Info *&Records,
                                    unsigned &NumRecords) const {
