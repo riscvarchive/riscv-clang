@@ -1365,6 +1365,7 @@ bool Generic_GCC::GCCInstallationDetector::getBiarchSibling(Multilib &M) const {
 
   static const char *const RISCVLibDirs[] = { "/lib64", "/lib" };
   static const char *const RISCVTriples[] = {
+    "riscv-linux",
     "riscv-linux-gnu",
     "riscv-unknown-linux-gnu"
   };
