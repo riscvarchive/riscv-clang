@@ -5387,8 +5387,8 @@ ABIArgInfo RISCVABIInfo::classifyReturnType(QualType RetTy) const {
 
 ABIArgInfo RISCVABIInfo::classifyArgumentType(QualType Ty) const {
   // Handle the generic C++ ABI.
-  if (CGCXXABI::RecordArgABI RAA = getRecordArgABI(Ty, CGT))
-    return ABIArgInfo::getIndirect(0, RAA == CGCXXABI::RAA_DirectInMemory);
+  if (CGCXXABI::RecordArgABI RAA = getRecordArgABI(Ty, getCXXABI()))
+    return ABIArgInfo::getIndirect(1, RAA == CGCXXABI::RAA_DirectInMemory);
 
   // Values that are not less than two words are passed indirectly
   uint64_t Size = getContext().getTypeSize(Ty);
