@@ -65,7 +65,6 @@ using llvm::opt::ArgStringList;
                            llvm::opt::ArgStringList &CmdArgs) const;
     void AddPPCTargetArgs(const llvm::opt::ArgList &Args,
                           llvm::opt::ArgStringList &CmdArgs) const;
-    void AddRISCVTargetArgs(const ArgList &Args, ArgStringList &CmdArgs) const;
     void AddRISCVTargetArgs(const llvm::opt::ArgList &Args,
                             llvm::opt::ArgStringList &CmdArgs) const;
     void AddR600TargetArgs(const llvm::opt::ArgList &Args,
