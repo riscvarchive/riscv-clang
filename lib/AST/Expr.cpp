@@ -3021,6 +3021,13 @@ bool Expr::HasSideEffects(const ASTContext &Ctx,
   case CXXReinterpretCastExprClass:
   case CXXConstCastExprClass:
   case CXXFunctionalCastExprClass: {
+    // While volatile reads are side-effecting in both C and C++, we treat them
+    // as having possible (not definite) side-effects. This allows idiomatic
+    // code to behave without warning, such as sizeof(*v) for a volatile-
+    // qualified pointer.
+    if (!IncludePossibleEffects)
+      break;
+
     const CastExpr *CE = cast<CastExpr>(this);
     if (CE->getCastKind() == CK_LValueToRValue &&
         CE->getSubExpr()->getType().isVolatileQualified())
@@ -3820,7 +3827,7 @@ DesignatedInitExpr::DesignatedInitExpr(const ASTContext &C, QualType Ty,
       // Compute type- and value-dependence.
       Expr *Index = IndexExprs[IndexIdx];
       if (Index->isTypeDependent() || Index->isValueDependent())
-        ExprBits.ValueDependent = true;
+        ExprBits.TypeDependent = ExprBits.ValueDependent = true;
       if (Index->isInstantiationDependent())
         ExprBits.InstantiationDependent = true;
       // Propagate unexpanded parameter packs.
@@ -3835,7 +3842,7 @@ DesignatedInitExpr::DesignatedInitExpr(const ASTContext &C, QualType Ty,
       Expr *End = IndexExprs[IndexIdx + 1];
       if (Start->isTypeDependent() || Start->isValueDependent() ||
           End->isTypeDependent() || End->isValueDependent()) {
-        ExprBits.ValueDependent = true;
+        ExprBits.TypeDependent = ExprBits.ValueDependent = true;
         ExprBits.InstantiationDependent = true;
       } else if (Start->isInstantiationDependent() || 
                  End->isInstantiationDependent()) {

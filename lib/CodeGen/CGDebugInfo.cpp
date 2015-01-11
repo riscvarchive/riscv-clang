@@ -1890,7 +1890,7 @@ llvm::DIType CGDebugInfo::CreateType(const MemberPointerType *Ty,
   if (!Ty->getPointeeType()->isFunctionType())
     return DBuilder.createMemberPointerType(
       getOrCreateType(Ty->getPointeeType(), U), ClassType,
-      CGM.PointerWidthInBits);
+      CGM.getContext().getTypeSize(Ty));
 
   const FunctionProtoType *FPT =
       Ty->getPointeeType()->getAs<FunctionProtoType>();
@@ -1898,7 +1898,7 @@ llvm::DIType CGDebugInfo::CreateType(const MemberPointerType *Ty,
       getOrCreateInstanceMethodType(CGM.getContext().getPointerType(QualType(
                                         Ty->getClass(), FPT->getTypeQuals())),
                                     FPT, U),
-      ClassType, CGM.PointerWidthInBits);
+      ClassType, CGM.getContext().getTypeSize(Ty));
 }
 
 llvm::DIType CGDebugInfo::CreateType(const AtomicType *Ty, llvm::DIFile U) {
@@ -2646,6 +2646,7 @@ void CGDebugInfo::EmitLocation(CGBuilderTy &Builder, SourceLocation Loc,
 
   // Don't bother if things are the same as last time.
   SourceManager &SM = CGM.getContext().getSourceManager();
+  assert(!LexicalBlockStack.empty());
   if (CurLoc == PrevLoc ||
       SM.getExpansionLoc(CurLoc) == SM.getExpansionLoc(PrevLoc))
     // New Builder may not be in sync with CGDebugInfo.

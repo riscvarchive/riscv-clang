@@ -998,6 +998,14 @@ TEST_F(FormatTest, UnderstandsSingleLineComments) {
                    " // first\n"
                    "// at start\n"
                    "otherLine();"));
+  EXPECT_EQ("void f() {\n"
+            "  lineWith(); // comment\n"
+            "  // at start\n"
+            "}",
+            format("void              f() {\n"
+                   "  lineWith(); // comment\n"
+                   "  // at start\n"
+                   "}"));
 
   verifyFormat(
       "#define A                                                  \\\n"
@@ -4666,6 +4674,10 @@ TEST_F(FormatTest, AlignsPipes) {
                "  CHECK_EQ(aaaa, (*bbbbbbbbb)->cccccc)\n"
                "      << \"qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq\";\n"
                "}");
+
+  // Handle 'endl'.
+  verifyFormat("llvm::errs() << aaaa << endl\n"
+               "             << bbbb << endl;");
 }
 
 TEST_F(FormatTest, UnderstandsEquals) {
@@ -4931,6 +4943,7 @@ TEST_F(FormatTest, UnderstandsTemplateParameters) {
 
   verifyFormat("f<int>();");
   verifyFormat("template <typename T> void f() {}");
+  verifyFormat("struct A<std::enable_if<sizeof(T2) < sizeof(int32)>::type>;");
 
   // Not template parameters.
   verifyFormat("return a < b && c > d;");
@@ -5164,6 +5177,7 @@ TEST_F(FormatTest, UnderstandsUsesOfStarAndAmp) {
       "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa(\n"
       "    aaaaaaaaaaaaaaaaaaaaaaaaaaaa, *aaaaaaaaaaaaaaaaaaaaaaaaaaaaa);");
 
+  verifyGoogleFormat("**outparam = 1;");
   verifyGoogleFormat("int main(int argc, char** argv) {}");
   verifyGoogleFormat("A<int*> a;");
   verifyGoogleFormat("A<int**> a;");

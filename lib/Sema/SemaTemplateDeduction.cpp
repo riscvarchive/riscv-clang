@@ -2588,6 +2588,9 @@ Sema::SubstituteExplicitTemplateArguments(
     = Function->getType()->getAs<FunctionProtoType>();
   assert(Proto && "Function template does not have a prototype?");
 
+  // Isolate our substituted parameters from our caller.
+  LocalInstantiationScope InstScope(*this, /*MergeWithOuterScope*/true);
+
   // Instantiate the types of each of the function parameters given the
   // explicitly-specified template arguments. If the function has a trailing
   // return type, substitute it after the arguments to ensure we substitute
@@ -3133,34 +3136,16 @@ static bool AdjustFunctionParmAndArgTypesForDeduction(Sema &S,
   //   are ignored for type deduction.
   if (ParamType.hasQualifiers())
     ParamType = ParamType.getUnqualifiedType();
+
+  //   [...] If P is a reference type, the type referred to by P is
+  //   used for type deduction.
   const ReferenceType *ParamRefType = ParamType->getAs<ReferenceType>();
-  if (ParamRefType) {
-    QualType PointeeType = ParamRefType->getPointeeType();
+  if (ParamRefType)
+    ParamType = ParamRefType->getPointeeType();
 
-    // If the argument has incomplete array type, try to complete its type.
-    if (ArgType->isIncompleteArrayType() && !S.RequireCompleteExprType(Arg, 0))
-      ArgType = Arg->getType();
-
-    //   [C++0x] If P is an rvalue reference to a cv-unqualified
-    //   template parameter and the argument is an lvalue, the type
-    //   "lvalue reference to A" is used in place of A for type
-    //   deduction.
-    if (isa<RValueReferenceType>(ParamType)) {
-      if (!PointeeType.getQualifiers() &&
-          isa<TemplateTypeParmType>(PointeeType) &&
-          Arg->Classify(S.Context).isLValue() &&
-          Arg->getType() != S.Context.OverloadTy &&
-          Arg->getType() != S.Context.BoundMemberTy)
-        ArgType = S.Context.getLValueReferenceType(ArgType);
-    }
-
-    //   [...] If P is a reference type, the type referred to by P is used
-    //   for type deduction.
-    ParamType = PointeeType;
-  }
-
-  // Overload sets usually make this parameter an undeduced
-  // context, but there are sometimes special circumstances.
+  // Overload sets usually make this parameter an undeduced context,
+  // but there are sometimes special circumstances.  Typically
+  // involving a template-id-expr.
   if (ArgType == S.Context.OverloadTy) {
     ArgType = ResolveOverloadForDeduction(S, TemplateParams,
                                           Arg, ParamType,
@@ -3170,12 +3155,17 @@ static bool AdjustFunctionParmAndArgTypesForDeduction(Sema &S,
   }
 
   if (ParamRefType) {
+    // If the argument has incomplete array type, try to complete its type.
+    if (ArgType->isIncompleteArrayType() && !S.RequireCompleteExprType(Arg, 0))
+      ArgType = Arg->getType();
+
     // C++0x [temp.deduct.call]p3:
-    //   [...] If P is of the form T&&, where T is a template parameter, and
-    //   the argument is an lvalue, the type A& is used in place of A for
-    //   type deduction.
+    //   If P is an rvalue reference to a cv-unqualified template
+    //   parameter and the argument is an lvalue, the type "lvalue
+    //   reference to A" is used in place of A for type deduction.
     if (ParamRefType->isRValueReferenceType() &&
-        ParamRefType->getAs<TemplateTypeParmType>() &&
+        !ParamType.getQualifiers() &&
+        isa<TemplateTypeParmType>(ParamType) &&
         Arg->isLValue())
       ArgType = S.Context.getLValueReferenceType(ArgType);
   } else {

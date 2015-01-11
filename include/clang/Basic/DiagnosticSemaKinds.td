@@ -4701,6 +4701,9 @@ def warn_addition_in_bitshift : Warning<
 def warn_self_assignment : Warning<
   "explicitly assigning value of variable of type %0 to itself">,
   InGroup<SelfAssignment>, DefaultIgnore;
+def warn_self_move : Warning<
+  "explicitly moving variable of type %0 to itself">,
+  InGroup<SelfMove>, DefaultIgnore;
 
 def warn_string_plus_int : Warning<
   "adding %0 to a string does not append to the string">,
@@ -4984,8 +4987,6 @@ def err_typecheck_op_on_nonoverlapping_address_space_pointers : Error<
   "|arithmetic operation with operands of type %diff{ ($ and $)|}0,1}2"
   " which are pointers to non-overlapping address spaces">;
 def err_typecheck_assign_const : Error<"read-only variable is not assignable">;
-def err_stmtexpr_file_scope : Error<
-  "statement expression not allowed at file scope">;
 def warn_mixed_sign_comparison : Warning<
   "comparison of integers of different signs: %0 and %1">,
   InGroup<SignCompare>, DefaultIgnore;
@@ -6166,6 +6167,8 @@ let CategoryName = "Inline Assembly Issue" in {
   def err_asm_tying_incompatible_types : Error<
     "unsupported inline asm: input with type "
     "%diff{$ matching output with type $|}0,1">;
+  def err_asm_unexpected_constraint_alternatives : Error<
+    "asm constraint has an unexpected number of alternatives: %0 vs %1">;
   def err_asm_incomplete_type : Error<"asm operand has incomplete type %0">;
   def err_asm_unknown_register_name : Error<"unknown register name '%0' in asm">;
   def err_asm_bad_register_type : Error<"bad type for named register variable">;
@@ -6176,6 +6179,8 @@ let CategoryName = "Inline Assembly Issue" in {
   def err_invalid_asm_cast_lvalue : Error<
     "invalid use of a cast in a inline asm context requiring an l-value: "
     "remove the cast or build with -fheinous-gnu-extensions">;
+  def err_invalid_asm_value_for_constraint
+      : Error <"value '%0' out of range for constraint '%1'">;
 
   def warn_asm_label_on_auto_decl : Warning<
     "ignored asm label '%0' on automatic variable">;

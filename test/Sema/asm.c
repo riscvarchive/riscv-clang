@@ -164,3 +164,16 @@ double f_output_constraint(void) {
   __asm("foo1": "=f" (result)); // expected-error {{invalid output constraint '=f' in asm}}
   return result;
 }
+
+void fn1() {
+  int l;
+  __asm__(""
+          : [l] "=r"(l)
+          : "[l],m"(l)); // expected-error {{asm constraint has an unexpected number of alternatives: 1 vs 2}}
+}
+
+void fn2() {
+  int l;
+ __asm__(""
+          : "+&m"(l)); // expected-error {{invalid output constraint '+&m' in asm}}
+}

@@ -577,6 +577,13 @@ def frewrite_includes : Flag<["-"], "frewrite-includes">, Group<f_Group>,
   Flags<[CC1Option]>;
 def fno_rewrite_includes : Flag<["-"], "fno-rewrite-includes">, Group<f_Group>;
 
+def frewrite_map_file : Separate<["-"], "frewrite-map-file">,
+                        Group<f_Group>,
+                        Flags<[ DriverOption, CC1Option ]>;
+def frewrite_map_file_EQ : Joined<["-"], "frewrite-map-file=">,
+                           Group<f_Group>,
+                           Flags<[DriverOption]>;
+
 def ffreestanding : Flag<["-"], "ffreestanding">, Group<f_Group>, Flags<[CC1Option]>,
   HelpText<"Assert that the compilation takes place in a freestanding environment">;
 def fgnu_keywords : Flag<["-"], "fgnu-keywords">, Group<f_Group>, Flags<[CC1Option]>,
@@ -1096,14 +1103,16 @@ def mhwdiv_EQ : Joined<["-"], "mhwdiv=">, Group<m_Group>;
 def mglobal_merge : Flag<["-"], "mglobal-merge">, Group<m_Group>;
 def mhard_float : Flag<["-"], "mhard-float">, Group<m_Group>;
 def miphoneos_version_min_EQ : Joined<["-"], "miphoneos-version-min=">, Group<m_Group>;
-def mios_version_min_EQ : Joined<["-"], "mios-version-min=">, Alias<miphoneos_version_min_EQ>;
+def mios_version_min_EQ : Joined<["-"], "mios-version-min=">,
+  Alias<miphoneos_version_min_EQ>, HelpText<"Set iOS deployment target">;
 def mios_simulator_version_min_EQ : Joined<["-"], "mios-simulator-version-min=">, Alias<miphoneos_version_min_EQ>;
 def mkernel : Flag<["-"], "mkernel">, Group<m_Group>;
 def mlinker_version_EQ : Joined<["-"], "mlinker-version=">,
   Flags<[DriverOption]>;
 def mllvm : Separate<["-"], "mllvm">, Flags<[CC1Option,CC1AsOption,CoreOption]>,
   HelpText<"Additional arguments to forward to LLVM's option processing">;
-def mmacosx_version_min_EQ : Joined<["-"], "mmacosx-version-min=">, Group<m_Group>;
+def mmacosx_version_min_EQ : Joined<["-"], "mmacosx-version-min=">,
+  Group<m_Group>, HelpText<"Set Mac OS X deployment target">;
 def mms_bitfields : Flag<["-"], "mms-bitfields">, Group<m_Group>, Flags<[CC1Option]>,
   HelpText<"Set the default structure layout to be compatible with the Microsoft compiler standard">;
 def mstackrealign : Flag<["-"], "mstackrealign">, Group<m_Group>, Flags<[CC1Option]>,
@@ -1204,6 +1213,8 @@ def mno_power8_vector : Flag<["-"], "mno-power8-vector">,
     Group<m_ppc_Features_Group>;
 def mfprnd : Flag<["-"], "mfprnd">, Group<m_ppc_Features_Group>;
 def mno_fprnd : Flag<["-"], "mno-fprnd">, Group<m_ppc_Features_Group>;
+def mcmpb : Flag<["-"], "mcmpb">, Group<m_ppc_Features_Group>;
+def mno_cmpb : Flag<["-"], "mno-cmpb">, Group<m_ppc_Features_Group>;
 def mmfcrf : Flag<["-"], "mmfcrf">, Group<m_ppc_Features_Group>;
 def mno_mfcrf : Flag<["-"], "mno-mfcrf">, Group<m_ppc_Features_Group>;
 def mpopcntd : Flag<["-"], "mpopcntd">, Group<m_ppc_Features_Group>;

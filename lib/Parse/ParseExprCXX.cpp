@@ -219,13 +219,19 @@ bool Parser::ParseOptionalCXXScopeSpecifier(CXXScopeSpec &SS,
     if (NextKind == tok::kw_new || NextKind == tok::kw_delete)
       return false;
 
-    // '::' - Global scope qualifier.
-    if (Actions.ActOnCXXGlobalScopeSpecifier(ConsumeToken(), SS))
-      return true;
+    if (NextKind == tok::l_brace) {
+      // It is invalid to have :: {, consume the scope qualifier and pretend
+      // like we never saw it.
+      Diag(ConsumeToken(), diag::err_expected) << tok::identifier;
+    } else {
+      // '::' - Global scope qualifier.
+      if (Actions.ActOnCXXGlobalScopeSpecifier(ConsumeToken(), SS))
+        return true;
 
-    CheckForLParenAfterColonColon();
+      CheckForLParenAfterColonColon();
 
-    HasScopeSpecifier = true;
+      HasScopeSpecifier = true;
+    }
   }
 
   if (Tok.is(tok::kw___super)) {
@@ -436,7 +442,18 @@ bool Parser::ParseOptionalCXXScopeSpecifier(CXXScopeSpec &SS,
         Next.setKind(tok::coloncolon);
       }
     }
-    
+
+    if (Next.is(tok::coloncolon) && GetLookAheadToken(2).is(tok::l_brace)) {
+      // It is invalid to have :: {, consume the scope qualifier and pretend
+      // like we never saw it.
+      Token Identifier = Tok; // Stash away the identifier.
+      ConsumeToken();         // Eat the identifier, current token is now '::'.
+      Diag(PP.getLocForEndOfToken(ConsumeToken()), diag::err_expected)
+          << tok::identifier;
+      UnconsumeToken(Identifier); // Stick the identifier back.
+      Next = NextToken();         // Point Next at the '{' token.
+    }
+
     if (Next.is(tok::coloncolon)) {
       if (CheckForDestructor && GetLookAheadToken(2).is(tok::tilde) &&
           !Actions.isNonTypeNestedNameSpecifier(
@@ -1035,6 +1052,7 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
   TemplateParameterDepthRAII CurTemplateDepthTracker(TemplateParameterDepth);
   Actions.PushLambdaScope();    
 
+  TypeResult TrailingReturnType;
   if (Tok.is(tok::l_paren)) {
     ParseScope PrototypeScope(this,
                               Scope::FunctionPrototypeScope |
@@ -1095,7 +1113,6 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
     SourceLocation FunLocalRangeEnd = DeclEndLoc;
 
     // Parse trailing-return-type[opt].
-    TypeResult TrailingReturnType;
     if (Tok.is(tok::arrow)) {
       FunLocalRangeEnd = Tok.getLocation();
       SourceRange Range;
@@ -1165,12 +1182,11 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
     MaybeParseCXX11Attributes(Attr, &DeclEndLoc);
 
     // Parse the return type, if there is one.
-    TypeResult TrailingReturnType;
     if (Tok.is(tok::arrow)) {
       SourceRange Range;
       TrailingReturnType = ParseTrailingReturnType(Range);
       if (Range.getEnd().isValid())
-        DeclEndLoc = Range.getEnd();      
+        DeclEndLoc = Range.getEnd();
     }
 
     SourceLocation NoLoc;
@@ -1218,9 +1234,9 @@ ExprResult Parser::ParseLambdaExpressionAfterIntroducer(
   StmtResult Stmt(ParseCompoundStatementBody());
   BodyScope.Exit();
 
-  if (!Stmt.isInvalid())
+  if (!Stmt.isInvalid() && !TrailingReturnType.isInvalid())
     return Actions.ActOnLambdaExpr(LambdaBeginLoc, Stmt.get(), getCurScope());
- 
+
   Actions.ActOnLambdaError(LambdaBeginLoc, getCurScope());
   return ExprError();
 }

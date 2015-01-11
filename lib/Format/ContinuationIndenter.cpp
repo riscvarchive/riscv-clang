@@ -93,8 +93,9 @@ bool ContinuationIndenter::canBreak(const LineState &State) {
   const FormatToken &Current = *State.NextToken;
   const FormatToken &Previous = *Current.Previous;
   assert(&Previous == Current.Previous);
-  if (!Current.CanBreakBefore && !(State.Stack.back().BreakBeforeClosingBrace &&
-                                   Current.closesBlockTypeList(Style)))
+  if (!Current.CanBreakBefore &&
+      !(State.Stack.back().BreakBeforeClosingBrace &&
+        Current.closesBlockTypeList(Style)))
     return false;
   // The opening "{" of a braced list has to be on the same line as the first
   // element if it is nested in another braced init list or function call.
@@ -196,7 +197,6 @@ bool ContinuationIndenter::mustBreak(const LineState &State) {
       return true;
   }
 
-
   // Same as above, but for the first "<<" operator.
   if (Current.is(tok::lessless) && Current.isNot(TT_OverloadedOperator) &&
       State.Stack.back().BreakBeforeParameter &&
@@ -209,12 +209,13 @@ bool ContinuationIndenter::mustBreak(const LineState &State) {
   if (Current.NestingLevel == 0 && !Current.isTrailingComment()) {
     if (Previous.ClosesTemplateDeclaration)
       return true;
-    if (Previous.is(TT_LeadingJavaAnnotation) && Current.isNot(tok::l_paren))
+    if (Previous.is(TT_LeadingJavaAnnotation) && Current.isNot(tok::l_paren) &&
+        Current.isNot(TT_LeadingJavaAnnotation))
       return true;
   }
 
   // If the return type spans multiple lines, wrap before the function name.
-  if (Current.isOneOf(TT_FunctionDeclarationName ,tok::kw_operator) &&
+  if (Current.isOneOf(TT_FunctionDeclarationName, tok::kw_operator) &&
       State.Stack.back().BreakBeforeParameter)
     return true;
 
@@ -905,12 +906,6 @@ unsigned ContinuationIndenter::addMultilineToken(const FormatToken &Current,
 unsigned ContinuationIndenter::breakProtrudingToken(const FormatToken &Current,
                                                     LineState &State,
                                                     bool DryRun) {
-  // FIXME: String literal breaking is currently disabled for Java and JS, as
-  // it requires strings to be merged using "+" which we don't support.
-  if (Style.Language == FormatStyle::LK_Java ||
-      Style.Language == FormatStyle::LK_JavaScript)
-    return 0;
-
   // Don't break multi-line tokens other than block comments. Instead, just
   // update the state.
   if (Current.isNot(TT_BlockComment) && Current.IsMultiline)
@@ -929,6 +924,12 @@ unsigned ContinuationIndenter::breakProtrudingToken(const FormatToken &Current,
   unsigned ColumnLimit = getColumnLimit(State);
 
   if (Current.isStringLiteral()) {
+    // FIXME: String literal breaking is currently disabled for Java and JS, as
+    // it requires strings to be merged using "+" which we don't support.
+    if (Style.Language == FormatStyle::LK_Java ||
+        Style.Language == FormatStyle::LK_JavaScript)
+      return 0;
+
     // Don't break string literals inside preprocessor directives (except for
     // #define directives, as their contents are stored in separate lines and
     // are not affected by this check).

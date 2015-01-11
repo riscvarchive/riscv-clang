@@ -977,6 +977,10 @@ void mips::getMipsCPUAndABI(const ArgList &Args,
     DefMips64CPU = "mips64r6";
   }
 
+  // MIPS3 is the default for mips64*-unknown-openbsd.
+  if (Triple.getOS() == llvm::Triple::OpenBSD)
+    DefMips64CPU = "mips3";
+
   if (Arg *A = Args.getLastArg(options::OPT_march_EQ,
                                options::OPT_mcpu_EQ))
     CPUName = A->getValue();
@@ -1587,6 +1591,7 @@ static std::string getCPUName(const ArgList &Args, const llvm::Triple &T) {
     return getSystemZTargetCPU(Args);
 
   case llvm::Triple::r600:
+  case llvm::Triple::amdgcn:
     return getR600TargetGPU(Args);
   }
 }
@@ -2172,11 +2177,13 @@ static void CollectArgsForIntegratedAssembler(Compilation &C,
 
 // Until ARM libraries are build separately, we have them all in one library
 static StringRef getArchNameForCompilerRTLib(const ToolChain &TC) {
-  if (TC.getArch() == llvm::Triple::arm ||
-      TC.getArch() == llvm::Triple::armeb)
+  // FIXME: handle 64-bit
+  if (TC.getTriple().isOSWindows() &&
+      !TC.getTriple().isWindowsItaniumEnvironment())
+    return "i386";
+  if (TC.getArch() == llvm::Triple::arm || TC.getArch() == llvm::Triple::armeb)
     return "arm";
-  else
-    return TC.getArchName();
+  return TC.getArchName();
 }
 
 static SmallString<128> getCompilerRTLibDir(const ToolChain &TC) {
@@ -2184,38 +2191,45 @@ static SmallString<128> getCompilerRTLibDir(const ToolChain &TC) {
   SmallString<128> Res(TC.getDriver().ResourceDir);
   const llvm::Triple &Triple = TC.getTriple();
   // TC.getOS() yield "freebsd10.0" whereas "freebsd" is expected.
-  StringRef OSLibName = (Triple.getOS() == llvm::Triple::FreeBSD) ?
-    "freebsd" : TC.getOS();
+  StringRef OSLibName =
+      (Triple.getOS() == llvm::Triple::FreeBSD) ? "freebsd" : TC.getOS();
   llvm::sys::path::append(Res, "lib", OSLibName);
   return Res;
+}
+
+static SmallString<128> getCompilerRT(const ToolChain &TC, StringRef Component,
+                                      bool Shared = false,
+                                      const char *Env = "") {
+  bool IsOSWindows = TC.getTriple().isOSWindows();
+  StringRef Arch = getArchNameForCompilerRTLib(TC);
+  const char *Prefix = IsOSWindows ? "" : "lib";
+  const char *Suffix =
+      Shared ? (IsOSWindows ? ".dll" : ".so") : (IsOSWindows ? ".lib" : ".a");
+
+  SmallString<128> Path = getCompilerRTLibDir(TC);
+  llvm::sys::path::append(Path, Prefix + Twine("clang_rt.") + Component + "-" +
+                                    Arch + Env + Suffix);
+
+  return Path;
 }
 
 // This adds the static libclang_rt.builtins-arch.a directly to the command line
 // FIXME: Make sure we can also emit shared objects if they're requested
 // and available, check for possible errors, etc.
-static void addClangRTLinux(
-    const ToolChain &TC, const ArgList &Args, ArgStringList &CmdArgs) {
-  SmallString<128> LibClangRT = getCompilerRTLibDir(TC);
-  llvm::sys::path::append(LibClangRT, Twine("libclang_rt.builtins-") +
-                                          getArchNameForCompilerRTLib(TC) +
-                                          ".a");
+static void addClangRT(const ToolChain &TC, const ArgList &Args,
+                       ArgStringList &CmdArgs) {
+  CmdArgs.push_back(Args.MakeArgString(getCompilerRT(TC, "builtins")));
 
-  CmdArgs.push_back(Args.MakeArgString(LibClangRT));
-  CmdArgs.push_back("-lgcc_s");
-  if (TC.getDriver().CCCIsCXX())
-    CmdArgs.push_back("-lgcc_eh");
+  if (!TC.getTriple().isOSWindows()) {
+    // FIXME: why do we link against gcc when we are using compiler-rt?
+    CmdArgs.push_back("-lgcc_s");
+    if (TC.getDriver().CCCIsCXX())
+      CmdArgs.push_back("-lgcc_eh");
+  }
 }
 
-static void addClangRTWindows(const ToolChain &TC, const ArgList &Args,
-                              ArgStringList &CmdArgs) {
-  SmallString<128> LibClangRT = getCompilerRTLibDir(TC);
-  llvm::sys::path::append(LibClangRT, Twine("libclang_rt.builtins-") +
-                          getArchNameForCompilerRTLib(TC) + ".lib");
-  CmdArgs.push_back(Args.MakeArgString(LibClangRT));
-}
-
-static void addProfileRT(
-    const ToolChain &TC, const ArgList &Args, ArgStringList &CmdArgs) {
+static void addProfileRT(const ToolChain &TC, const ArgList &Args,
+                         ArgStringList &CmdArgs) {
   if (!(Args.hasFlag(options::OPT_fprofile_arcs, options::OPT_fno_profile_arcs,
                      false) ||
         Args.hasArg(options::OPT_fprofile_generate) ||
@@ -2224,38 +2238,22 @@ static void addProfileRT(
         Args.hasArg(options::OPT_coverage)))
     return;
 
-  SmallString<128> LibProfile = getCompilerRTLibDir(TC);
-  llvm::sys::path::append(LibProfile, Twine("libclang_rt.profile-") +
-                                          getArchNameForCompilerRTLib(TC) +
-                                          ".a");
-
-  CmdArgs.push_back(Args.MakeArgString(LibProfile));
-}
-
-static SmallString<128> getSanitizerRTLibName(const ToolChain &TC,
-                                              StringRef Sanitizer,
-                                              bool Shared) {
-  // Sanitizer runtime has name "libclang_rt.<Sanitizer>-<ArchName>.{a,so}"
-  // (or "libclang_rt.<Sanitizer>-<ArchName>-android.so for Android)
-  const char *EnvSuffix =
-    TC.getTriple().getEnvironment() == llvm::Triple::Android ?  "-android" : "";
-  SmallString<128> LibSanitizer = getCompilerRTLibDir(TC);
-  llvm::sys::path::append(LibSanitizer,
-                          Twine("libclang_rt.") + Sanitizer + "-" +
-                              getArchNameForCompilerRTLib(TC) + EnvSuffix +
-                              (Shared ? ".so" : ".a"));
-  return LibSanitizer;
+  CmdArgs.push_back(Args.MakeArgString(getCompilerRT(TC, "profile")));
 }
 
 static void addSanitizerRuntime(const ToolChain &TC, const ArgList &Args,
                                 ArgStringList &CmdArgs, StringRef Sanitizer,
                                 bool IsShared) {
-  SmallString<128> LibSanitizer = getSanitizerRTLibName(TC, Sanitizer, IsShared);
+  const char *Env = TC.getTriple().getEnvironment() == llvm::Triple::Android
+                        ? "-android"
+                        : "";
+
   // Static runtimes must be forced into executable, so we wrap them in
   // whole-archive.
   if (!IsShared)
     CmdArgs.push_back("-whole-archive");
-  CmdArgs.push_back(Args.MakeArgString(LibSanitizer));
+  CmdArgs.push_back(Args.MakeArgString(getCompilerRT(TC, Sanitizer, IsShared,
+                                                     Env)));
   if (!IsShared)
     CmdArgs.push_back("-no-whole-archive");
 }
@@ -2265,10 +2263,9 @@ static void addSanitizerRuntime(const ToolChain &TC, const ArgList &Args,
 static bool addSanitizerDynamicList(const ToolChain &TC, const ArgList &Args,
                                     ArgStringList &CmdArgs,
                                     StringRef Sanitizer) {
-  SmallString<128> LibSanitizer = getSanitizerRTLibName(TC, Sanitizer, false);
-  if (llvm::sys::fs::exists(LibSanitizer + ".syms")) {
-    CmdArgs.push_back(
-        Args.MakeArgString("--dynamic-list=" + LibSanitizer + ".syms"));
+  SmallString<128> SanRT = getCompilerRT(TC, Sanitizer);
+  if (llvm::sys::fs::exists(SanRT + ".syms")) {
+    CmdArgs.push_back(Args.MakeArgString("--dynamic-list=" + SanRT + ".syms"));
     return true;
   }
   return false;
@@ -2515,6 +2512,16 @@ static std::string getMSCompatibilityVersion(const char *VersionStr) {
   return llvm::utostr_32(Version / 100) + "." +
       llvm::utostr_32(Version % 100) + "." +
       llvm::utostr_32(Build);
+}
+
+// Claim options we don't want to warn if they are unused. We do this for
+// options that build systems might add but are unused when assembling or only
+// running the preprocessor for example.
+static void claimNoWarnArgs(const ArgList &Args) {
+  // Don't warn about unused -f(no-)?lto.  This can happen when we're
+  // preprocessing, precompiling or assembling.
+  Args.ClaimAllArgs(options::OPT_flto);
+  Args.ClaimAllArgs(options::OPT_fno_lto);
 }
 
 void Clang::ConstructJob(Compilation &C, const JobAction &JA,
@@ -2842,6 +2849,19 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back("-fno-merge-all-constants");
 
   // LLVM Code Generator Options.
+
+  if (Args.hasArg(options::OPT_frewrite_map_file) ||
+      Args.hasArg(options::OPT_frewrite_map_file_EQ)) {
+    for (arg_iterator
+             MFI = Args.filtered_begin(options::OPT_frewrite_map_file,
+                                       options::OPT_frewrite_map_file_EQ),
+             MFE = Args.filtered_end();
+         MFI != MFE; ++MFI) {
+      CmdArgs.push_back("-frewrite-map-file");
+      CmdArgs.push_back((*MFI)->getValue());
+      (*MFI)->claim();
+    }
+  }
 
   if (Arg *A = Args.getLastArg(options::OPT_Wframe_larger_than_EQ)) {
     StringRef v = A->getValue();
@@ -3460,9 +3480,7 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     D.Diag(diag::warn_ignored_gcc_optimization) << (*it)->getAsString(Args);
   }
 
-  // Don't warn about unused -flto.  This can happen when we're preprocessing or
-  // precompiling.
-  Args.ClaimAllArgs(options::OPT_flto);
+  claimNoWarnArgs(Args);
 
   Args.AddAllArgs(CmdArgs, options::OPT_R_Group);
   Args.AddAllArgs(CmdArgs, options::OPT_W_Group);
@@ -4890,6 +4908,8 @@ void ClangAs::ConstructJob(Compilation &C, const JobAction &JA,
   // and "clang -emit-llvm -c foo.s"
   Args.ClaimAllArgs(options::OPT_emit_llvm);
 
+  claimNoWarnArgs(Args);
+
   // Invoke ourselves in -cc1as mode.
   //
   // FIXME: Implement custom jobs for internal actions.
@@ -5170,6 +5190,7 @@ void hexagon::Assemble::ConstructJob(Compilation &C, const JobAction &JA,
                                const InputInfoList &Inputs,
                                const ArgList &Args,
                                const char *LinkingOutput) const {
+  claimNoWarnArgs(Args);
 
   const Driver &D = getToolChain().getDriver();
   ArgStringList CmdArgs;
@@ -5538,6 +5559,7 @@ llvm::Triple::ArchType darwin::getArchTypeForMachOArchName(StringRef Str) {
     .Cases("armv7s", "xscale", llvm::Triple::arm)
     .Case("arm64", llvm::Triple::aarch64)
     .Case("r600", llvm::Triple::r600)
+    .Case("amdgcn", llvm::Triple::amdgcn)
     .Case("nvptx", llvm::Triple::nvptx)
     .Case("nvptx64", llvm::Triple::nvptx64)
     .Case("amdil", llvm::Triple::amdil)
@@ -6079,6 +6101,7 @@ void solaris::Assemble::ConstructJob(Compilation &C, const JobAction &JA,
                                       const InputInfoList &Inputs,
                                       const ArgList &Args,
                                       const char *LinkingOutput) const {
+  claimNoWarnArgs(Args);
   ArgStringList CmdArgs;
 
   Args.AddAllArgValues(CmdArgs, options::OPT_Wa_COMMA,
@@ -6204,6 +6227,7 @@ void openbsd::Assemble::ConstructJob(Compilation &C, const JobAction &JA,
                                      const InputInfoList &Inputs,
                                      const ArgList &Args,
                                      const char *LinkingOutput) const {
+  claimNoWarnArgs(Args);
   ArgStringList CmdArgs;
   bool NeedsKPIC = false;
 
@@ -6406,6 +6430,7 @@ void bitrig::Assemble::ConstructJob(Compilation &C, const JobAction &JA,
                                     const InputInfoList &Inputs,
                                     const ArgList &Args,
                                     const char *LinkingOutput) const {
+  claimNoWarnArgs(Args);
   ArgStringList CmdArgs;
 
   Args.AddAllArgValues(CmdArgs, options::OPT_Wa_COMMA,
@@ -6542,6 +6567,7 @@ void freebsd::Assemble::ConstructJob(Compilation &C, const JobAction &JA,
                                      const InputInfoList &Inputs,
                                      const ArgList &Args,
                                      const char *LinkingOutput) const {
+  claimNoWarnArgs(Args);
   ArgStringList CmdArgs;
 
   // When building 32-bit code on FreeBSD/amd64, we have to explicitly
@@ -6807,6 +6833,7 @@ void netbsd::Assemble::ConstructJob(Compilation &C, const JobAction &JA,
                                      const InputInfoList &Inputs,
                                      const ArgList &Args,
                                      const char *LinkingOutput) const {
+  claimNoWarnArgs(Args);
   ArgStringList CmdArgs;
 
   // GNU as needs different flags for creating the correct output format
@@ -7089,6 +7116,8 @@ void gnutools::Assemble::ConstructJob(Compilation &C, const JobAction &JA,
                                       const InputInfoList &Inputs,
                                       const ArgList &Args,
                                       const char *LinkingOutput) const {
+  claimNoWarnArgs(Args);
+
   ArgStringList CmdArgs;
   bool NeedsKPIC = false;
 
@@ -7367,19 +7396,17 @@ static std::string getLinuxDynamicLinker(const ArgList &Args,
 }
 
 static void AddRunTimeLibs(const ToolChain &TC, const Driver &D,
-                      ArgStringList &CmdArgs, const ArgList &Args) {
+                           ArgStringList &CmdArgs, const ArgList &Args) {
   // Make use of compiler-rt if --rtlib option is used
   ToolChain::RuntimeLibType RLT = TC.GetRuntimeLibType(Args);
 
-  switch(RLT) {
+  switch (RLT) {
   case ToolChain::RLT_CompilerRT:
     switch (TC.getTriple().getOS()) {
     default: llvm_unreachable("unsupported OS");
     case llvm::Triple::Win32:
-      addClangRTWindows(TC, Args, CmdArgs);
-      break;
     case llvm::Triple::Linux:
-      addClangRTLinux(TC, Args, CmdArgs);
+      addClangRT(TC, Args, CmdArgs);
       break;
     }
     break;
@@ -7663,6 +7690,7 @@ void minix::Assemble::ConstructJob(Compilation &C, const JobAction &JA,
                                    const InputInfoList &Inputs,
                                    const ArgList &Args,
                                    const char *LinkingOutput) const {
+  claimNoWarnArgs(Args);
   ArgStringList CmdArgs;
 
   Args.AddAllArgValues(CmdArgs, options::OPT_Wa_COMMA, options::OPT_Xassembler);
@@ -7740,6 +7768,7 @@ void dragonfly::Assemble::ConstructJob(Compilation &C, const JobAction &JA,
                                        const InputInfoList &Inputs,
                                        const ArgList &Args,
                                        const char *LinkingOutput) const {
+  claimNoWarnArgs(Args);
   ArgStringList CmdArgs;
 
   // When building 32-bit code on DragonFly/pc64, we have to explicitly
@@ -7906,15 +7935,6 @@ void dragonfly::Link::ConstructJob(Compilation &C, const JobAction &JA,
   C.addCommand(llvm::make_unique<Command>(JA, *this, Exec, CmdArgs));
 }
 
-static void addSanitizerRTWindows(const ToolChain &TC, const ArgList &Args,
-                                  ArgStringList &CmdArgs,
-                                  StringRef RTName) {
-  SmallString<128> LibSanitizer(getCompilerRTLibDir(TC));
-  llvm::sys::path::append(LibSanitizer,
-                          Twine("clang_rt.") + RTName + ".lib");
-  CmdArgs.push_back(Args.MakeArgString(LibSanitizer));
-}
-
 // Try to find Exe from a Visual Studio distribution.  This first tries to find
 // an installed copy of Visual Studio and, failing that, looks in the PATH,
 // making sure that whatever executable that's found is not a same-named exe
@@ -8003,19 +8023,25 @@ void visualstudio::Link::ConstructJob(Compilation &C, const JobAction &JA,
   if (TC.getSanitizerArgs().needsAsanRt()) {
     CmdArgs.push_back(Args.MakeArgString("-debug"));
     CmdArgs.push_back(Args.MakeArgString("-incremental:no"));
-    // FIXME: Handle 64-bit.
     if (Args.hasArg(options::OPT__SLASH_MD, options::OPT__SLASH_MDd)) {
-      addSanitizerRTWindows(TC, Args, CmdArgs, "asan_dynamic-i386");
-      addSanitizerRTWindows(TC, Args, CmdArgs,
-                            "asan_dynamic_runtime_thunk-i386");
+      static const char *CompilerRTComponents[] = {
+        "asan_dynamic",
+        "asan_dynamic_runtime_thunk",
+      };
+      for (const auto &Component : CompilerRTComponents)
+        CmdArgs.push_back(Args.MakeArgString(getCompilerRT(TC, Component)));
       // Make sure the dynamic runtime thunk is not optimized out at link time
       // to ensure proper SEH handling.
       CmdArgs.push_back(Args.MakeArgString("-include:___asan_seh_interceptor"));
     } else if (DLL) {
-      addSanitizerRTWindows(TC, Args, CmdArgs, "asan_dll_thunk-i386");
+      CmdArgs.push_back(Args.MakeArgString(getCompilerRT(TC, "asan_dll_thunk")));
     } else {
-      addSanitizerRTWindows(TC, Args, CmdArgs, "asan-i386");
-      addSanitizerRTWindows(TC, Args, CmdArgs, "asan_cxx-i386");
+      static const char *CompilerRTComponents[] = {
+        "asan",
+        "asan_cxx",
+      };
+      for (const auto &Component : CompilerRTComponents)
+        CmdArgs.push_back(Args.MakeArgString(getCompilerRT(TC, Component)));
     }
   }
 
@@ -8175,6 +8201,7 @@ void XCore::Assemble::ConstructJob(Compilation &C, const JobAction &JA,
                                        const InputInfoList &Inputs,
                                        const ArgList &Args,
                                        const char *LinkingOutput) const {
+  claimNoWarnArgs(Args);
   ArgStringList CmdArgs;
 
   CmdArgs.push_back("-o");
@@ -8234,6 +8261,7 @@ void CrossWindows::Assemble::ConstructJob(Compilation &C, const JobAction &JA,
                                           const InputInfoList &Inputs,
                                           const ArgList &Args,
                                           const char *LinkingOutput) const {
+  claimNoWarnArgs(Args);
   const auto &TC =
       static_cast<const toolchains::CrossWindowsToolChain &>(getToolChain());
   ArgStringList CmdArgs;

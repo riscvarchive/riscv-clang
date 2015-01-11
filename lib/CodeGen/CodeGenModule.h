@@ -261,6 +261,7 @@ class CodeGenModule : public CodeGenTypeCache {
   CodeGenModule(const CodeGenModule &) LLVM_DELETED_FUNCTION;
   void operator=(const CodeGenModule &) LLVM_DELETED_FUNCTION;
 
+public:
   struct Structor {
     Structor() : Priority(0), Initializer(nullptr), AssociatedData(nullptr) {}
     Structor(int Priority, llvm::Constant *Initializer,
@@ -274,6 +275,7 @@ class CodeGenModule : public CodeGenTypeCache {
 
   typedef std::vector<Structor> CtorList;
 
+private:
   ASTContext &Context;
   const LangOptions &LangOpts;
   const CodeGenOptions &CodeGenOpts;
@@ -623,6 +625,9 @@ public:
   MicrosoftVTableContext &getMicrosoftVTableContext() {
     return VTables.getMicrosoftVTableContext();
   }
+
+  CtorList &getGlobalCtors() { return GlobalCtors; }
+  CtorList &getGlobalDtors() { return GlobalDtors; }
 
   llvm::MDNode *getTBAAInfo(QualType QTy);
   llvm::MDNode *getTBAAInfoForVTablePtr();
@@ -1195,9 +1200,15 @@ private:
   /// Emits the initializer for a uuidof string.
   llvm::Constant *EmitUuidofInitializer(StringRef uuidstr);
 
-  /// Determine if the given decl can be emitted lazily; this is only relevant
-  /// for definitions. The given decl must be either a function or var decl.
-  bool MayDeferGeneration(const ValueDecl *D);
+  /// Determine whether the definition must be emitted; if this returns \c
+  /// false, the definition can be emitted lazily if it's used.
+  bool MustBeEmitted(const ValueDecl *D);
+
+  /// Determine whether the definition can be emitted eagerly, or should be
+  /// delayed until the end of the translation unit. This is relevant for
+  /// definitions whose linkage can change, e.g. implicit function instantions
+  /// which may later be explicitly instantiated.
+  bool MayBeEmittedEagerly(const ValueDecl *D);
 
   /// Check whether we can use a "simpler", more core exceptions personality
   /// function.

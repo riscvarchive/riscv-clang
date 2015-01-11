@@ -242,6 +242,9 @@ TEST_F(FormatTestJava, Annotations) {
   verifyFormat("@Override // comment\n"
                "@Nullable\n"
                "public String getNameIfPresent() {}");
+  verifyFormat("@java.lang.Override // comment\n"
+               "@Nullable\n"
+               "public String getNameIfPresent() {}");
 
   verifyFormat("@SuppressWarnings(value = \"unchecked\")\n"
                "public void doSomething() {}");
@@ -255,6 +258,7 @@ TEST_F(FormatTestJava, Annotations) {
                "});");
 
   verifyFormat("void SomeFunction(@Nullable String something) {}");
+  verifyFormat("void SomeFunction(@org.llvm.Nullable String something) {}");
 
   verifyFormat("@Partial @Mock DataLoader loader;");
   verifyFormat("@SuppressWarnings(value = \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\")\n"
@@ -262,7 +266,13 @@ TEST_F(FormatTestJava, Annotations) {
 
   verifyFormat("@SomeAnnotation(\"With some really looooooooooooooong text\")\n"
                "private static final long something = 0L;");
+  verifyFormat("@org.llvm.Qualified(\"With some really looooooooooong text\")\n"
+               "private static final long something = 0L;");
   verifyFormat("@Mock\n"
+               "DataLoader loooooooooooooooooooooooader =\n"
+               "    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;",
+               getStyleWithColumns(60));
+  verifyFormat("@org.llvm.QualifiedMock\n"
                "DataLoader loooooooooooooooooooooooader =\n"
                "    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;",
                getStyleWithColumns(60));
@@ -289,6 +299,10 @@ TEST_F(FormatTestJava, Generics) {
 
   verifyFormat("private Foo<X, Y>[] foos;");
   verifyFormat("Foo<X, Y>[] foos = this.foos;");
+  verifyFormat("return (a instanceof List<?>)\n"
+               "    ? aaaaaaaaaaaaaaaaaaaaaaa(aaaaaaaaaaaaaaaaaaaaa)\n"
+               "    : aaaaaaaaaaaaaaaaaaaaaaa;",
+               getStyleWithColumns(60));
 
   verifyFormat(
       "SomeLoooooooooooooooooooooongType name =\n"
@@ -387,6 +401,11 @@ TEST_F(FormatTestJava, FormatsInnerBlocks) {
                "    System.out.println(42);\n"
                "  }\n"
                "}, someOtherParameter);");
+  verifyFormat("someFunction(new Runnable() {\n"
+               "  public void run() {\n"
+               "    System.out.println(42);\n"
+               "  }\n"
+               "});");
   verifyFormat("someObject.someFunction(\n"
                "    new Runnable() {\n"
                "      @Override\n"
@@ -423,6 +442,19 @@ TEST_F(FormatTestJava, BreaksStringLiterals) {
   // requires strings to be merged using "+" which we don't support.
   EXPECT_EQ("\"some text other\";",
             format("\"some text other\";", getStyleWithColumns(14)));
+}
+
+TEST_F(FormatTestJava, AlignsBlockComments) {
+  EXPECT_EQ("/*\n"
+            " * Really multi-line\n"
+            " * comment.\n"
+            " */\n"
+            "void f() {}",
+            format("  /*\n"
+                   "   * Really multi-line\n"
+                   "   * comment.\n"
+                   "   */\n"
+                   "  void f() {}"));
 }
 
 } // end namespace tooling
