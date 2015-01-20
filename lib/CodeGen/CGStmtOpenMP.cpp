@@ -14,9 +14,9 @@
 #include "CGOpenMPRuntime.h"
 #include "CodeGenFunction.h"
 #include "CodeGenModule.h"
+#include "TargetInfo.h"
 #include "clang/AST/Stmt.h"
 #include "clang/AST/StmtOpenMP.h"
-#include "TargetInfo.h"
 using namespace clang;
 using namespace CodeGen;
 
@@ -86,13 +86,13 @@ static void EmitOMPIfClause(CodeGenFunction &CGF, const Expr *Cond,
   // Emit the 'else' code if present.
   {
     // There is no need to emit line number for unconditional branch.
-    SuppressDebugLocation SDL(CGF.Builder);
+    ApplyDebugLocation DL(CGF);
     CGF.EmitBlock(ElseBlock);
   }
   CodeGen(/*ThenBlock*/ false);
   {
     // There is no need to emit line number for unconditional branch.
-    SuppressDebugLocation SDL(CGF.Builder);
+    ApplyDebugLocation DL(CGF);
     CGF.EmitBranch(ContBlock);
   }
   // Emit the continuation block for code after the if.

@@ -2476,8 +2476,24 @@ getCCForDeclaratorChunk(Sema &S, Declarator &D,
     }
   }
 
-  return S.Context.getDefaultCallingConvention(FTI.isVariadic,
-                                               IsCXXInstanceMethod);
+  CallingConv CC = S.Context.getDefaultCallingConvention(FTI.isVariadic,
+                                                         IsCXXInstanceMethod);
+
+  // Attribute AT_OpenCLKernel affects the calling convention only on
+  // the SPIR target, hence it cannot be treated as a calling
+  // convention attribute. This is the simplest place to infer
+  // "spir_kernel" for OpenCL kernels on SPIR.
+  if (CC == CC_SpirFunction) {
+    for (const AttributeList *Attr = D.getDeclSpec().getAttributes().getList();
+         Attr; Attr = Attr->getNext()) {
+      if (Attr->getKind() == AttributeList::AT_OpenCLKernel) {
+        CC = CC_SpirKernel;
+        break;
+      }
+    }
+  }
+
+  return CC;
 }
 
 static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
@@ -2792,8 +2808,16 @@ static TypeSourceInfo *GetFullTypeForDeclarator(TypeProcessingState &state,
       // class type in C++.
       if ((T.getCVRQualifiers() || T->isAtomicType()) &&
           !(S.getLangOpts().CPlusPlus &&
-            (T->isDependentType() || T->isRecordType())))
-        diagnoseRedundantReturnTypeQualifiers(S, T, D, chunkIndex);
+            (T->isDependentType() || T->isRecordType()))) {
+	if (T->isVoidType() && !S.getLangOpts().CPlusPlus &&
+	    D.getFunctionDefinitionKind() == FDK_Definition) {
+	  // [6.9.1/3] qualified void return is invalid on a C
+	  // function definition.  Apparently ok on declarations and
+	  // in C++ though (!)
+	  S.Diag(DeclType.Loc, diag::err_func_returning_qualified_void) << T;
+	} else
+	  diagnoseRedundantReturnTypeQualifiers(S, T, D, chunkIndex);
+      }
 
       // Objective-C ARC ownership qualifiers are ignored on the function
       // return type (by type canonicalization). Complain if this attribute

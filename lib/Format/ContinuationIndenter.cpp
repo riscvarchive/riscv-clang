@@ -516,7 +516,7 @@ unsigned ContinuationIndenter::getNewLineColumn(const LineState &State) {
   if (NextNonComment->is(tok::l_brace) && NextNonComment->BlockKind == BK_Block)
     return Current.NestingLevel == 0 ? State.FirstIndent
                                      : State.Stack.back().Indent;
-  if (Current.isOneOf(tok::r_brace, tok::r_square)) {
+  if (Current.isOneOf(tok::r_brace, tok::r_square) && State.Stack.size() > 1) {
     if (Current.closesBlockTypeList(Style))
       return State.Stack[State.Stack.size() - 2].NestedBlockIndent;
     if (Current.MatchingParen &&
@@ -632,6 +632,7 @@ unsigned ContinuationIndenter::moveStateToNextToken(LineState &State,
     //       ^ line up here.
     State.Stack.back().Indent =
         State.Column + (Style.BreakConstructorInitializersBeforeComma ? 0 : 2);
+    State.Stack.back().NestedBlockIndent = State.Stack.back().Indent;
     if (Style.ConstructorInitializerAllOnOneLineOrOnePerLine)
       State.Stack.back().AvoidBinPacking = true;
     State.Stack.back().BreakBeforeParameter = false;
@@ -782,7 +783,6 @@ void ContinuationIndenter::moveStatePastFakeLParens(LineState &State,
 void ContinuationIndenter::moveStatePastFakeRParens(LineState &State) {
   for (unsigned i = 0, e = State.NextToken->FakeRParens; i != e; ++i) {
     unsigned VariablePos = State.Stack.back().VariablePos;
-    assert(State.Stack.size() > 1);
     if (State.Stack.size() == 1) {
       // Do not pop the last element.
       break;
@@ -1081,8 +1081,9 @@ bool ContinuationIndenter::nextIsMultilineString(const LineState &State) {
   if (Current.getNextNonComment() &&
       Current.getNextNonComment()->isStringLiteral())
     return true; // Implicit concatenation.
-  if (State.Column + Current.ColumnWidth + Current.UnbreakableTailLength >
-      Style.ColumnLimit)
+  if (Style.ColumnLimit != 0 &&
+      State.Column + Current.ColumnWidth + Current.UnbreakableTailLength >
+          Style.ColumnLimit)
     return true; // String will be split.
   return false;
 }

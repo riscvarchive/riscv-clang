@@ -391,7 +391,8 @@ DSAStackTy::DSAVarData DSAStackTy::getTopDSA(VarDecl *D, bool FromParent) {
   // OpenMP [2.9.1.1, Data-sharing Attribute Rules for Variables Referenced
   // in a Construct, C/C++, predetermined, p.1]
   //  Variables appearing in threadprivate directives are threadprivate.
-  if (D->getTLSKind() != VarDecl::TLS_None) {
+  if (D->getTLSKind() != VarDecl::TLS_None ||
+      D->getStorageClass() == SC_Register) {
     DVar.CKind = OMPC_threadprivate;
     return DVar;
   }
@@ -420,21 +421,23 @@ DSAStackTy::DSAVarData DSAStackTy::getTopDSA(VarDecl *D, bool FromParent) {
       DVar.CKind = OMPC_private;
       return DVar;
     }
-  }
 
-  // OpenMP [2.9.1.1, Data-sharing Attribute Rules for Variables Referenced
-  // in a Construct, C/C++, predetermined, p.4]
-  //  Static data members are shared.
-  if (D->isStaticDataMember()) {
-    // Variables with const-qualified type having no mutable member may be
-    // listed in a firstprivate clause, even if they are static data members.
-    DSAVarData DVarTemp = hasDSA(D, MatchesAnyClause(OMPC_firstprivate),
-                                 MatchesAlways(), FromParent);
-    if (DVarTemp.CKind == OMPC_firstprivate && DVarTemp.RefExpr)
+    // OpenMP [2.9.1.1, Data-sharing Attribute Rules for Variables Referenced
+    // in a Construct, C/C++, predetermined, p.4]
+    //  Static data members are shared.
+    // OpenMP [2.9.1.1, Data-sharing Attribute Rules for Variables Referenced
+    // in a Construct, C/C++, predetermined, p.7]
+    //  Variables with static storage duration that are declared in a scope
+    //  inside the construct are shared.
+    if (D->isStaticDataMember() || D->isStaticLocal()) {
+      DSAVarData DVarTemp =
+          hasDSA(D, isOpenMPPrivate, MatchesAlways(), FromParent);
+      if (DVarTemp.CKind != OMPC_unknown && DVarTemp.RefExpr)
+        return DVar;
+
+      DVar.CKind = OMPC_shared;
       return DVar;
-
-    DVar.CKind = OMPC_shared;
-    return DVar;
+    }
   }
 
   QualType Type = D->getType().getNonReferenceType().getCanonicalType();
@@ -458,15 +461,6 @@ DSAStackTy::DSAVarData DSAStackTy::getTopDSA(VarDecl *D, bool FromParent) {
     if (DVarTemp.CKind == OMPC_firstprivate && DVarTemp.RefExpr)
       return DVar;
 
-    DVar.CKind = OMPC_shared;
-    return DVar;
-  }
-
-  // OpenMP [2.9.1.1, Data-sharing Attribute Rules for Variables Referenced
-  // in a Construct, C/C++, predetermined, p.7]
-  //  Variables with static storage duration that are declared in a scope
-  //  inside the construct are shared.
-  if (D->isStaticLocal()) {
     DVar.CKind = OMPC_shared;
     return DVar;
   }
@@ -841,8 +835,10 @@ Sema::CheckOMPThreadPrivateDecl(SourceLocation Loc, ArrayRef<Expr *> VarList) {
     }
 
     // Check if this is a TLS variable.
-    if (VD->getTLSKind()) {
-      Diag(ILoc, diag::err_omp_var_thread_local) << VD;
+    if (VD->getTLSKind() != VarDecl::TLS_None ||
+        VD->getStorageClass() == SC_Register) {
+      Diag(ILoc, diag::err_omp_var_thread_local)
+          << VD << ((VD->getTLSKind() != VarDecl::TLS_None) ? 0 : 1);
       bool IsDecl =
           VD->isThisDeclarationADefinition(Context) == VarDecl::DeclarationOnly;
       Diag(VD->getLocation(),
@@ -3052,6 +3048,23 @@ StmtResult Sema::ActOnOpenMPSingleDirective(ArrayRef<OMPClause *> Clauses,
 
   getCurFunction()->setHasBranchProtectedScope();
 
+  // OpenMP [2.7.3, single Construct, Restrictions]
+  // The copyprivate clause must not be used with the nowait clause.
+  OMPClause *Nowait = nullptr;
+  OMPClause *Copyprivate = nullptr;
+  for (auto *Clause : Clauses) {
+    if (Clause->getClauseKind() == OMPC_nowait)
+      Nowait = Clause;
+    else if (Clause->getClauseKind() == OMPC_copyprivate)
+      Copyprivate = Clause;
+    if (Copyprivate && Nowait) {
+      Diag(Copyprivate->getLocStart(),
+           diag::err_omp_single_copyprivate_with_nowait);
+      Diag(Nowait->getLocStart(), diag::note_omp_nowait_clause_here);
+      return StmtError();
+    }
+  }
+
   return OMPSingleDirective::Create(Context, StartLoc, EndLoc, Clauses, AStmt);
 }
 
@@ -4169,7 +4182,7 @@ OMPClause *Sema::ActOnOpenMPPrivateClause(ArrayRef<Expr *> VarList,
     auto VDPrivateRefExpr =
         DeclRefExpr::Create(Context, /*QualifierLoc*/ NestedNameSpecifierLoc(),
                             /*TemplateKWLoc*/ SourceLocation(), VDPrivate,
-                            /*RefersToCapturedVariable*/ false,
+                            /*RefersToEnclosingVariableOrCapture*/ false,
                             /*NameLoc*/ SourceLocation(), DE->getType(),
                             /*VK*/ VK_LValue);
 
@@ -4392,7 +4405,7 @@ OMPClause *Sema::ActOnOpenMPFirstprivateClause(ArrayRef<Expr *> VarList,
       VDInitRefExpr = DeclRefExpr::Create(
           Context, /*QualifierLoc*/ NestedNameSpecifierLoc(),
           /*TemplateKWLoc*/ SourceLocation(), VDInit,
-          /*RefersToCapturedVariable*/ true, ELoc, Type,
+          /*RefersToEnclosingVariableOrCapture*/ true, ELoc, Type,
           /*VK*/ VK_LValue);
       VDInit->setIsUsed();
       auto Init = DefaultLvalueConversion(VDInitRefExpr).get();
@@ -4407,12 +4420,13 @@ OMPClause *Sema::ActOnOpenMPFirstprivateClause(ArrayRef<Expr *> VarList,
         VDPrivate->setInit(Result.getAs<Expr>());
     } else {
       AddInitializerToDecl(
-          VDPrivate, DefaultLvalueConversion(
-                         DeclRefExpr::Create(Context, NestedNameSpecifierLoc(),
-                                             SourceLocation(), DE->getDecl(),
-                                             /*RefersToCapturedVariable=*/true,
-                                             DE->getExprLoc(), DE->getType(),
-                                             /*VK=*/VK_LValue)).get(),
+          VDPrivate,
+          DefaultLvalueConversion(
+              DeclRefExpr::Create(Context, NestedNameSpecifierLoc(),
+                                  SourceLocation(), DE->getDecl(),
+                                  /*RefersToEnclosingVariableOrCapture=*/true,
+                                  DE->getExprLoc(), DE->getType(),
+                                  /*VK=*/VK_LValue)).get(),
           /*DirectInit=*/false, /*TypeMayContainAuto=*/false);
     }
     if (VDPrivate->isInvalidDecl()) {
@@ -4423,11 +4437,12 @@ OMPClause *Sema::ActOnOpenMPFirstprivateClause(ArrayRef<Expr *> VarList,
       continue;
     }
     CurContext->addDecl(VDPrivate);
-    auto VDPrivateRefExpr = DeclRefExpr::Create(
-        Context, /*QualifierLoc*/ NestedNameSpecifierLoc(),
-        /*TemplateKWLoc*/ SourceLocation(), VDPrivate,
-        /*RefersToCapturedVariable*/ false, DE->getLocStart(), DE->getType(),
-        /*VK*/ VK_LValue);
+    auto VDPrivateRefExpr =
+        DeclRefExpr::Create(Context, /*QualifierLoc*/ NestedNameSpecifierLoc(),
+                            /*TemplateKWLoc*/ SourceLocation(), VDPrivate,
+                            /*RefersToEnclosingVariableOrCapture*/ false,
+                            DE->getLocStart(), DE->getType(),
+                            /*VK*/ VK_LValue);
     DSAStack->addDSA(VD, DE, OMPC_firstprivate);
     Vars.push_back(DE);
     PrivateCopies.push_back(VDPrivateRefExpr);

@@ -1,7 +1,7 @@
 ;;; clang-format.el --- Format code using clang-format
 
 ;; Keywords: tools, c
-;; Package-Requires: ((json "1.3"))
+;; Package-Requires: ((cl-lib "0.3"))
 
 ;;; Commentary:
 
@@ -28,7 +28,8 @@
 
 ;;; Code:
 
-(require 'json)
+(require 'cl-lib)
+(require 'xml)
 
 (defgroup clang-format nil
   "Format code using clang-format."
@@ -55,8 +56,51 @@ of the buffer."
   :safe #'stringp)
 (make-variable-buffer-local 'clang-format-style)
 
+(defun clang-format--extract (xml-node)
+  "Extract replacements and cursor information from XML-NODE."
+  (unless (and (listp xml-node) (eq (xml-node-name xml-node) 'replacements))
+    (error "Expected <replacements> node"))
+  (let ((nodes (xml-node-children xml-node))
+        replacements
+        cursor)
+    (dolist (node nodes)
+      (when (listp node)
+        (let* ((children (xml-node-children node))
+               (text (car children)))
+          (cl-case (xml-node-name node)
+            ('replacement
+             (let* ((offset (xml-get-attribute-or-nil node 'offset))
+                    (length (xml-get-attribute-or-nil node 'length)))
+               (when (or (null offset) (null length))
+                 (error "<replacement> node does not have offset and length attributes"))
+               (when (cdr children)
+                 (error "More than one child node in <replacement> node"))
+
+               (setq offset (string-to-number offset))
+               (setq length (string-to-number length))
+               (push (list offset length text) replacements)))
+            ('cursor
+             (setq cursor (string-to-number text)))))))
+
+    ;; Sort by decreasing offset, length.
+    (setq replacements (sort (delq nil replacements)
+                             (lambda (a b)
+                               (or (> (car a) (car b))
+                                   (and (= (car a) (car b))
+                                        (> (cadr a) (cadr b)))))))
+
+    (cons replacements cursor)))
+
+(defun clang-format--replace (offset length &optional text)
+  (let ((start (byte-to-position (1+ offset)))
+        (end (byte-to-position (+ 1 offset length))))
+    (goto-char start)
+    (delete-region start end)
+    (when text
+      (insert text))))
+
 ;;;###autoload
-(defun clang-format-region (start end &optional style)
+(defun clang-format-region (char-start char-end &optional style)
   "Use clang-format to format the code between START and END according to STYLE.
 If called interactively uses the region or the current statement if there
 is no active region.  If no style is given uses `clang-format-style'."
@@ -68,51 +112,52 @@ is no active region.  If no style is given uses `clang-format-style'."
   (unless style
     (setq style clang-format-style))
 
-  (let* ((temp-file (make-temp-file "clang-format"))
-         (keep-stderr (list t temp-file))
-         (window-starts
-          (mapcar (lambda (w) (list w (window-start w)))
-                  (get-buffer-window-list)))
-         (status)
-         (stderr)
-         (json))
-
+  (let ((start (1- (position-bytes char-start)))
+        (end (1- (position-bytes char-end)))
+        (cursor (1- (position-bytes (point))))
+        (temp-buffer (generate-new-buffer " *clang-format-temp*"))
+        (temp-file (make-temp-file "clang-format")))
     (unwind-protect
-        (setq status
-              (call-process-region
-               (point-min) (point-max) clang-format-executable
-               'delete keep-stderr nil
+        (let (status stderr operations)
+          (setq status
+                (call-process-region
+                 (point-min) (point-max) clang-format-executable
+                 nil `(,temp-buffer ,temp-file) nil
 
-               "-assume-filename" (or (buffer-file-name) "")
-               "-style" style
-               "-offset" (number-to-string (1- start))
-               "-length" (number-to-string (- end start))
-               "-cursor" (number-to-string (1- (point))))
-              stderr
-              (with-temp-buffer
-                (insert-file-contents temp-file)
-                (when (> (point-max) (point-min))
-                  (insert ": "))
-                (buffer-substring-no-properties
-                 (point-min) (line-end-position))))
-      (delete-file temp-file))
+                 "-output-replacements-xml"
+                 "-assume-filename" (or (buffer-file-name) "")
+                 "-style" style
+                 "-offset" (number-to-string start)
+                 "-length" (number-to-string (- end start))
+                 "-cursor" (number-to-string cursor)))
+          (setq stderr
+                (with-temp-buffer
+                  (insert-file-contents temp-file)
+                  (when (> (point-max) (point-min))
+                    (insert ": "))
+                  (buffer-substring-no-properties
+                   (point-min) (line-end-position))))
 
-    (cond
-     ((stringp status)
-      (error "(clang-format killed by signal %s%s)" status stderr))
-     ((not (equal 0 status))
-      (error "(clang-format failed with code %d%s)" status stderr))
-     (t (message "(clang-format succeeded%s)" stderr)))
+          (cond
+           ((stringp status)
+            (error "(clang-format killed by signal %s%s)" status stderr))
+           ((not (equal 0 status))
+            (error "(clang-format failed with code %d%s)" status stderr))
+           (t (message "(clang-format succeeded%s)" stderr)))
 
-    (goto-char (point-min))
-    (setq json (json-read-from-string
-                (buffer-substring-no-properties
-                 (point-min) (line-end-position))))
+          (with-current-buffer temp-buffer
+            (setq operations (clang-format--extract (car (xml-parse-region)))))
 
-    (delete-region (point-min) (line-beginning-position 2))
-    (mapc (lambda (w) (apply #'set-window-start w))
-          window-starts)
-    (goto-char (1+ (cdr (assoc 'Cursor json))))))
+          (let ((replacements (car operations))
+                (cursor (cdr operations)))
+            (save-excursion
+              (mapc (lambda (rpl)
+                      (apply #'clang-format--replace rpl))
+                    replacements))
+            (when cursor
+              (goto-char (byte-to-position (1+ cursor))))))
+      (delete-file temp-file)
+      (when (buffer-name temp-buffer) (kill-buffer temp-buffer)))))
 
 ;;;###autoload
 (defun clang-format-buffer (&optional style)

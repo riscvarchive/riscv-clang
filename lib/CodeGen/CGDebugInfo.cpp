@@ -52,54 +52,47 @@ CGDebugInfo::~CGDebugInfo() {
          "Region stack mismatch, stack not empty!");
 }
 
-SaveAndRestoreLocation::SaveAndRestoreLocation(CodeGenFunction &CGF,
-                                               CGBuilderTy &B)
-    : DI(CGF.getDebugInfo()), Builder(B) {
-  if (DI) {
-    SavedLoc = DI->getLocation();
-    DI->CurLoc = SourceLocation();
-  }
-}
-
-SaveAndRestoreLocation::~SaveAndRestoreLocation() {
-  if (DI)
-    DI->EmitLocation(Builder, SavedLoc);
-}
-
-NoLocation::NoLocation(CodeGenFunction &CGF, CGBuilderTy &B)
-    : SaveAndRestoreLocation(CGF, B) {
-  if (DI)
-    Builder.SetCurrentDebugLocation(llvm::DebugLoc());
-}
-
-NoLocation::~NoLocation() {
-  if (DI)
-    assert(Builder.getCurrentDebugLocation().isUnknown());
-}
-
-ArtificialLocation::ArtificialLocation(CodeGenFunction &CGF, CGBuilderTy &B)
-    : SaveAndRestoreLocation(CGF, B) {
-  if (DI)
-    Builder.SetCurrentDebugLocation(llvm::DebugLoc());
-}
-
-void ArtificialLocation::Emit() {
-  if (DI) {
-    // Sync the Builder.
-    DI->EmitLocation(Builder, SavedLoc);
-    DI->CurLoc = SourceLocation();
+ArtificialLocation::ArtificialLocation(CodeGenFunction &CGF)
+    : ApplyDebugLocation(CGF) {
+  if (auto *DI = CGF.getDebugInfo()) {
     // Construct a location that has a valid scope, but no line info.
     assert(!DI->LexicalBlockStack.empty());
     llvm::DIDescriptor Scope(DI->LexicalBlockStack.back());
-    Builder.SetCurrentDebugLocation(llvm::DebugLoc::get(0, 0, Scope));
+    CGF.Builder.SetCurrentDebugLocation(llvm::DebugLoc::get(0, 0, Scope));
   }
 }
 
-ArtificialLocation::~ArtificialLocation() {
-  if (DI)
-    assert(Builder.getCurrentDebugLocation().getLine() == 0);
+ApplyDebugLocation::ApplyDebugLocation(CodeGenFunction &CGF,
+                                       SourceLocation TemporaryLocation,
+                                       bool ForceColumnInfo)
+    : CGF(CGF) {
+  if (auto *DI = CGF.getDebugInfo()) {
+    OriginalLocation = CGF.Builder.getCurrentDebugLocation();
+    if (TemporaryLocation.isInvalid())
+      CGF.Builder.SetCurrentDebugLocation(llvm::DebugLoc());
+    else
+      DI->EmitLocation(CGF.Builder, TemporaryLocation, ForceColumnInfo);
+  }
 }
 
+ApplyDebugLocation::ApplyDebugLocation(CodeGenFunction &CGF, llvm::DebugLoc Loc)
+    : CGF(CGF) {
+  if (CGF.getDebugInfo()) {
+    OriginalLocation = CGF.Builder.getCurrentDebugLocation();
+    if (!Loc.isUnknown())
+      CGF.Builder.SetCurrentDebugLocation(Loc);
+  }
+}
+
+ApplyDebugLocation::~ApplyDebugLocation() {
+  // Query CGF so the location isn't overwritten when location updates are
+  // temporarily disabled (for C++ default function arguments)
+  if (CGF.getDebugInfo())
+    CGF.Builder.SetCurrentDebugLocation(OriginalLocation);
+}
+
+/// ArtificialLocation - An RAII object that temporarily switches to
+/// an artificial debug location that has a valid scope, but no line
 void CGDebugInfo::setLocation(SourceLocation Loc) {
   // If the new location isn't valid return.
   if (Loc.isInvalid())
@@ -2644,20 +2637,6 @@ void CGDebugInfo::EmitLocation(CGBuilderTy &Builder, SourceLocation Loc,
   if (CurLoc.isInvalid() || CurLoc.isMacroID())
     return;
 
-  // Don't bother if things are the same as last time.
-  SourceManager &SM = CGM.getContext().getSourceManager();
-  assert(!LexicalBlockStack.empty());
-  if (CurLoc == PrevLoc ||
-      SM.getExpansionLoc(CurLoc) == SM.getExpansionLoc(PrevLoc))
-    // New Builder may not be in sync with CGDebugInfo.
-    if (!Builder.getCurrentDebugLocation().isUnknown() &&
-        Builder.getCurrentDebugLocation().getScope(CGM.getLLVMContext()) ==
-            LexicalBlockStack.back())
-      return;
-
-  // Update last state.
-  PrevLoc = CurLoc;
-
   llvm::MDNode *Scope = LexicalBlockStack.back();
   Builder.SetCurrentDebugLocation(llvm::DebugLoc::get(
       getLineNumber(CurLoc), getColumnNumber(CurLoc, ForceColumnInfo), Scope));
@@ -2831,6 +2810,7 @@ void CGDebugInfo::EmitDeclare(const VarDecl *VD, llvm::dwarf::LLVMConstants Tag,
     Line = getLineNumber(VD->getLocation());
     Column = getColumnNumber(VD->getLocation());
   }
+  SmallVector<int64_t, 9> Expr;
   unsigned Flags = 0;
   if (VD->isImplicit())
     Flags |= llvm::DIDescriptor::FlagArtificial;
@@ -2844,7 +2824,7 @@ void CGDebugInfo::EmitDeclare(const VarDecl *VD, llvm::dwarf::LLVMConstants Tag,
   if (llvm::Argument *Arg = dyn_cast<llvm::Argument>(Storage))
     if (Arg->getType()->isPointerTy() && !Arg->hasByValAttr() &&
         !VD->getType()->isPointerType())
-      Flags |= llvm::DIDescriptor::FlagIndirectVariable;
+      Expr.push_back(llvm::dwarf::DW_OP_deref);
 
   llvm::MDNode *Scope = LexicalBlockStack.back();
 
@@ -2852,17 +2832,16 @@ void CGDebugInfo::EmitDeclare(const VarDecl *VD, llvm::dwarf::LLVMConstants Tag,
   if (!Name.empty()) {
     if (VD->hasAttr<BlocksAttr>()) {
       CharUnits offset = CharUnits::fromQuantity(32);
-      SmallVector<int64_t, 9> addr;
-      addr.push_back(llvm::dwarf::DW_OP_plus);
+      Expr.push_back(llvm::dwarf::DW_OP_plus);
       // offset of __forwarding field
       offset = CGM.getContext().toCharUnitsFromBits(
           CGM.getTarget().getPointerWidth(0));
-      addr.push_back(offset.getQuantity());
-      addr.push_back(llvm::dwarf::DW_OP_deref);
-      addr.push_back(llvm::dwarf::DW_OP_plus);
+      Expr.push_back(offset.getQuantity());
+      Expr.push_back(llvm::dwarf::DW_OP_deref);
+      Expr.push_back(llvm::dwarf::DW_OP_plus);
       // offset of x field
       offset = CGM.getContext().toCharUnitsFromBits(XOffset);
-      addr.push_back(offset.getQuantity());
+      Expr.push_back(offset.getQuantity());
 
       // Create the descriptor for the variable.
       llvm::DIVariable D = DBuilder.createLocalVariable(
@@ -2870,12 +2849,12 @@ void CGDebugInfo::EmitDeclare(const VarDecl *VD, llvm::dwarf::LLVMConstants Tag,
 
       // Insert an llvm.dbg.declare into the current block.
       llvm::Instruction *Call =
-          DBuilder.insertDeclare(Storage, D, DBuilder.createExpression(addr),
+          DBuilder.insertDeclare(Storage, D, DBuilder.createExpression(Expr),
                                  Builder.GetInsertBlock());
       Call->setDebugLoc(llvm::DebugLoc::get(Line, Column, Scope));
       return;
     } else if (isa<VariableArrayType>(VD->getType()))
-      Flags |= llvm::DIDescriptor::FlagIndirectVariable;
+      Expr.push_back(llvm::dwarf::DW_OP_deref);
   } else if (const RecordType *RT = dyn_cast<RecordType>(VD->getType())) {
     // If VD is an anonymous union then Storage represents value for
     // all union fields.
@@ -2896,7 +2875,8 @@ void CGDebugInfo::EmitDeclare(const VarDecl *VD, llvm::dwarf::LLVMConstants Tag,
 
         // Insert an llvm.dbg.declare into the current block.
         llvm::Instruction *Call = DBuilder.insertDeclare(
-            Storage, D, DBuilder.createExpression(), Builder.GetInsertBlock());
+            Storage, D, DBuilder.createExpression(Expr),
+            Builder.GetInsertBlock());
         Call->setDebugLoc(llvm::DebugLoc::get(Line, Column, Scope));
       }
       return;
@@ -2910,7 +2890,7 @@ void CGDebugInfo::EmitDeclare(const VarDecl *VD, llvm::dwarf::LLVMConstants Tag,
 
   // Insert an llvm.dbg.declare into the current block.
   llvm::Instruction *Call = DBuilder.insertDeclare(
-      Storage, D, DBuilder.createExpression(), Builder.GetInsertBlock());
+      Storage, D, DBuilder.createExpression(Expr), Builder.GetInsertBlock());
   Call->setDebugLoc(llvm::DebugLoc::get(Line, Column, Scope));
 }
 

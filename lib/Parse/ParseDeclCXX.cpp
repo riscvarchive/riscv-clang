@@ -17,8 +17,8 @@
 #include "clang/AST/DeclTemplate.h"
 #include "clang/Basic/Attributes.h"
 #include "clang/Basic/CharInfo.h"
-#include "clang/Basic/TargetInfo.h"
 #include "clang/Basic/OperatorKinds.h"
+#include "clang/Basic/TargetInfo.h"
 #include "clang/Parse/ParseDiagnostic.h"
 #include "clang/Sema/DeclSpec.h"
 #include "clang/Sema/ParsedTemplate.h"
@@ -2019,7 +2019,7 @@ bool Parser::isCXX11FinalKeyword() const {
 
 /// \brief Parse a C++ member-declarator up to, but not including, the optional
 /// brace-or-equal-initializer or pure-specifier.
-void Parser::ParseCXXMemberDeclaratorBeforeInitializer(
+bool Parser::ParseCXXMemberDeclaratorBeforeInitializer(
     Declarator &DeclaratorInfo, VirtSpecifiers &VS, ExprResult &BitfieldSize,
     LateParsedAttrList &LateParsedAttrs) {
   // member-declarator:
@@ -2073,6 +2073,15 @@ void Parser::ParseCXXMemberDeclaratorBeforeInitializer(
       }
     }
   }
+
+  // If this has neither a name nor a bit width, something has gone seriously
+  // wrong. Skip until the semi-colon or }.
+  if (!DeclaratorInfo.hasName() && BitfieldSize.isUnset()) {
+    // If so, skip until the semi-colon or a }.
+    SkipUntil(tok::r_brace, StopAtSemi | StopBeforeMatch);
+    return true;
+  }
+  return false;
 }
 
 /// ParseCXXClassMemberDeclaration - Parse a C++ class member declaration.
@@ -2298,14 +2307,8 @@ void Parser::ParseCXXClassMemberDeclaration(AccessSpecifier AS,
   bool ExpectSemi = true;
 
   // Parse the first declarator.
-  ParseCXXMemberDeclaratorBeforeInitializer(DeclaratorInfo, VS, BitfieldSize,
-                                            LateParsedAttrs);
-
-  // If this has neither a name nor a bit width, something has gone seriously
-  // wrong. Skip until the semi-colon or }.
-  if (!DeclaratorInfo.hasName() && BitfieldSize.isUnset()) {
-    // If so, skip until the semi-colon or a }.
-    SkipUntil(tok::r_brace, StopAtSemi | StopBeforeMatch);
+  if (ParseCXXMemberDeclaratorBeforeInitializer(
+          DeclaratorInfo, VS, BitfieldSize, LateParsedAttrs)) {
     TryConsumeToken(tok::semi);
     return;
   }
@@ -2354,7 +2357,7 @@ void Parser::ParseCXXClassMemberDeclaration(AccessSpecifier AS,
       ProhibitAttributes(FnAttrs);
     }
 
-    if (DefinitionKind) {
+    if (DefinitionKind != FDK_Declaration) {
       if (!DeclaratorInfo.isFunctionDeclarator()) {
         Diag(DeclaratorInfo.getIdentifierLoc(), diag::err_func_def_no_params);
         ConsumeBrace();
@@ -2530,16 +2533,17 @@ void Parser::ParseCXXClassMemberDeclaration(AccessSpecifier AS,
     // Parse the next declarator.
     DeclaratorInfo.clear();
     VS.clear();
-    BitfieldSize = true;
-    Init = true;
+    BitfieldSize = ExprResult(/*Invalid=*/false);
+    Init = ExprResult(/*Invalid=*/false);
     HasInitializer = false;
     DeclaratorInfo.setCommaLoc(CommaLoc);
 
     // GNU attributes are allowed before the second and subsequent declarator.
     MaybeParseGNUAttributes(DeclaratorInfo);
 
-    ParseCXXMemberDeclaratorBeforeInitializer(DeclaratorInfo, VS, BitfieldSize,
-                                              LateParsedAttrs);
+    if (ParseCXXMemberDeclaratorBeforeInitializer(
+            DeclaratorInfo, VS, BitfieldSize, LateParsedAttrs))
+      break;
   }
 
   if (ExpectSemi &&
@@ -3149,23 +3153,11 @@ Parser::tryParseExceptionSpecification(bool Delayed,
     ExceptionSpecTokens->push_back(StartTok); // 'throw' or 'noexcept'
     ExceptionSpecTokens->push_back(Tok); // '('
     SpecificationRange.setEnd(ConsumeParen()); // '('
-    
-    if (!ConsumeAndStoreUntil(tok::r_paren, *ExceptionSpecTokens,
-                              /*StopAtSemi=*/true,
-                              /*ConsumeFinalToken=*/true)) {
-      NoexceptExpr = 0;
-      delete ExceptionSpecTokens;
-      ExceptionSpecTokens = 0;
-      return IsNoexcept? EST_BasicNoexcept : EST_DynamicNone;
-    }
+
+    ConsumeAndStoreUntil(tok::r_paren, *ExceptionSpecTokens,
+                         /*StopAtSemi=*/true,
+                         /*ConsumeFinalToken=*/true);
     SpecificationRange.setEnd(Tok.getLocation());
-    
-    // Add the 'stop' token.
-    Token End;
-    End.startToken();
-    End.setKind(tok::cxx_exceptspec_end);
-    End.setLocation(Tok.getLocation());
-    ExceptionSpecTokens->push_back(End);
     return EST_Unparsed;
   }
   
