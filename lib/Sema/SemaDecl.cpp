@@ -8841,11 +8841,12 @@ void Sema::AddInitializerToDecl(Decl *RealDecl, Expr *Init,
           });
       if (Res.isInvalid()) {
         VDecl->setInvalidDecl();
-        return;
-      }
-      if (Res.get() != Args[Idx])
+      } else if (Res.get() != Args[Idx]) {
         Args[Idx] = Res.get();
+      }
     }
+    if (VDecl->isInvalidDecl())
+      return;
 
     InitializationSequence InitSeq(*this, Entity, Kind, Args);
     ExprResult Result = InitSeq.Perform(*this, Entity, Kind, Args, &DclT);
@@ -13979,7 +13980,10 @@ Decl *Sema::getObjCDeclContext() const {
 }
 
 AvailabilityResult Sema::getCurContextAvailability() const {
-  const Decl *D = cast<Decl>(getCurObjCLexicalContext());
+  const Decl *D = cast_or_null<Decl>(getCurObjCLexicalContext());
+  if (!D)
+    return AR_Available;
+
   // If we are within an Objective-C method, we should consult
   // both the availability of the method as well as the
   // enclosing class.  If the class is (say) deprecated,

@@ -1363,11 +1363,17 @@ bool Generic_GCC::GCCInstallationDetector::getBiarchSibling(Multilib &M) const {
   static const char *const SPARCv9Triples[] = { "sparc64-linux-gnu",
                                                 "sparcv9-linux-gnu" };
 
-  static const char *const RISCVLibDirs[] = { "/lib64", "/lib" };
+  static const char *const RISCVLibDirs[] = { "/lib32", "/lib" };
   static const char *const RISCVTriples[] = {
     "riscv-linux",
     "riscv-linux-gnu",
     "riscv-unknown-linux-gnu"
+  };
+  static const char *const RISCV64LibDirs[] = { "/lib64", "/lib" };
+  static const char *const RISCV64Triples[] = {
+    "riscv64-linux",
+    "riscv64-linux-gnu",
+    "riscv64-unknown-linux-gnu"
   };
 
   static const char *const SystemZLibDirs[] = { "/lib64", "/lib" };
@@ -1488,6 +1494,11 @@ bool Generic_GCC::GCCInstallationDetector::getBiarchSibling(Multilib &M) const {
       RISCVLibDirs, RISCVLibDirs + llvm::array_lengthof(RISCVLibDirs));
     TripleAliases.append(
       RISCVTriples, RISCVTriples + llvm::array_lengthof(RISCVTriples));
+  case llvm::Triple::riscv64:
+    LibDirs.append(
+      RISCV64LibDirs, RISCV64LibDirs + llvm::array_lengthof(RISCV64LibDirs));
+    TripleAliases.append(
+      RISCV64Triples, RISCV64Triples + llvm::array_lengthof(RISCV64Triples));
     break;
   case llvm::Triple::systemz:
     LibDirs.append(begin(SystemZLibDirs), end(SystemZLibDirs));

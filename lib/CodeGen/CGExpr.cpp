@@ -807,6 +807,7 @@ LValue CodeGenFunction::EmitCheckedLValue(const Expr *E, TypeCheckKind TCK) {
 /// length type, this is not possible.
 ///
 LValue CodeGenFunction::EmitLValue(const Expr *E) {
+  ApplyDebugLocation DL(*this, E);
   switch (E->getStmtClass()) {
   default: return EmitUnsupportedLValue(E, "l-value expression");
 
@@ -3059,16 +3060,6 @@ RValue CodeGenFunction::EmitRValueForField(LValue LV,
 
 RValue CodeGenFunction::EmitCallExpr(const CallExpr *E,
                                      ReturnValueSlot ReturnValue) {
-  // Force column info to be generated so we can differentiate
-  // multiple call sites on the same line in the debug info.
-  // FIXME: This is insufficient. Two calls coming from the same macro
-  // expansion will still get the same line/column and break debug info. It's
-  // possible that LLVM can be fixed to not rely on this uniqueness, at which
-  // point this workaround can be removed.
-  ApplyDebugLocation DL(*this, E->getLocStart(),
-                        E->getDirectCallee() &&
-                            E->getDirectCallee()->isInlineSpecified());
-
   // Builtins never have block type.
   if (E->getCallee()->getType()->isBlockPointerType())
     return EmitBlockCallExpr(E, ReturnValue);
@@ -3328,16 +3319,6 @@ RValue CodeGenFunction::EmitCall(QualType CalleeType, llvm::Value *Callee,
   const auto *FnType =
       cast<FunctionType>(cast<PointerType>(CalleeType)->getPointeeType());
 
-  // Force column info to differentiate multiple inlined call sites on
-  // the same line, analoguous to EmitCallExpr.
-  // FIXME: This is insufficient. Two calls coming from the same macro expansion
-  // will still get the same line/column and break debug info. It's possible
-  // that LLVM can be fixed to not rely on this uniqueness, at which point this
-  // workaround can be removed.
-  bool ForceColumnInfo = false;
-  if (const FunctionDecl* FD = dyn_cast_or_null<const FunctionDecl>(TargetDecl))
-    ForceColumnInfo = FD->isInlineSpecified();
-
   if (getLangOpts().CPlusPlus && SanOpts.has(SanitizerKind::Function) &&
       (!TargetDecl || !isa<FunctionDecl>(TargetDecl))) {
     if (llvm::Constant *PrefixSig =
@@ -3386,8 +3367,7 @@ RValue CodeGenFunction::EmitCall(QualType CalleeType, llvm::Value *Callee,
     Args.add(RValue::get(Builder.CreateBitCast(Chain, CGM.VoidPtrTy)),
              CGM.getContext().VoidPtrTy);
   EmitCallArgs(Args, dyn_cast<FunctionProtoType>(FnType), E->arg_begin(),
-               E->arg_end(), E->getDirectCallee(), /*ParamsToSkip*/ 0,
-               ForceColumnInfo);
+               E->arg_end(), E->getDirectCallee(), /*ParamsToSkip*/ 0);
 
   const CGFunctionInfo &FnInfo = CGM.getTypes().arrangeFreeFunctionCall(
       Args, FnType, /*isChainCall=*/Chain);

@@ -63,16 +63,24 @@ ArtificialLocation::ArtificialLocation(CodeGenFunction &CGF)
 }
 
 ApplyDebugLocation::ApplyDebugLocation(CodeGenFunction &CGF,
-                                       SourceLocation TemporaryLocation,
-                                       bool ForceColumnInfo)
+                                       SourceLocation TemporaryLocation)
     : CGF(CGF) {
+  init(TemporaryLocation);
+}
+
+void ApplyDebugLocation::init(SourceLocation TemporaryLocation) {
   if (auto *DI = CGF.getDebugInfo()) {
     OriginalLocation = CGF.Builder.getCurrentDebugLocation();
     if (TemporaryLocation.isInvalid())
       CGF.Builder.SetCurrentDebugLocation(llvm::DebugLoc());
     else
-      DI->EmitLocation(CGF.Builder, TemporaryLocation, ForceColumnInfo);
+      DI->EmitLocation(CGF.Builder, TemporaryLocation);
   }
+}
+
+ApplyDebugLocation::ApplyDebugLocation(CodeGenFunction &CGF, const Expr *E)
+    : CGF(CGF) {
+  init(E->getExprLoc());
 }
 
 ApplyDebugLocation::ApplyDebugLocation(CodeGenFunction &CGF, llvm::DebugLoc Loc)
@@ -2629,8 +2637,7 @@ void CGDebugInfo::EmitFunctionStart(GlobalDecl GD, SourceLocation Loc,
 /// EmitLocation - Emit metadata to indicate a change in line/column
 /// information in the source file. If the location is invalid, the
 /// previous location will be reused.
-void CGDebugInfo::EmitLocation(CGBuilderTy &Builder, SourceLocation Loc,
-                               bool ForceColumnInfo) {
+void CGDebugInfo::EmitLocation(CGBuilderTy &Builder, SourceLocation Loc) {
   // Update our current location
   setLocation(Loc);
 
@@ -2639,7 +2646,7 @@ void CGDebugInfo::EmitLocation(CGBuilderTy &Builder, SourceLocation Loc,
 
   llvm::MDNode *Scope = LexicalBlockStack.back();
   Builder.SetCurrentDebugLocation(llvm::DebugLoc::get(
-      getLineNumber(CurLoc), getColumnNumber(CurLoc, ForceColumnInfo), Scope));
+      getLineNumber(CurLoc), getColumnNumber(CurLoc), Scope));
 }
 
 /// CreateLexicalBlock - Creates a new lexical block node and pushes it on

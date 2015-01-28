@@ -86,6 +86,13 @@ public:
   /// of the right bracket.
   SourceLocation getOperatorLoc() const { return getRParenLoc(); }
 
+  SourceLocation getExprLoc() const LLVM_READONLY {
+    return (Operator < OO_Plus || Operator >= OO_Arrow ||
+            Operator == OO_PlusPlus || Operator == OO_MinusMinus)
+               ? getLocStart()
+               : getOperatorLoc();
+  }
+
   SourceLocation getLocStart() const LLVM_READONLY { return Range.getBegin(); }
   SourceLocation getLocEnd() const LLVM_READONLY { return Range.getEnd(); }
   SourceRange getSourceRange() const { return Range; }
@@ -1127,7 +1134,7 @@ public:
                                   ConstructionKind ConstructKind,
                                   SourceRange ParenOrBraceRange);
 
-  CXXConstructorDecl* getConstructor() const { return Constructor; }
+  CXXConstructorDecl *getConstructor() const { return Constructor; }
   void setConstructor(CXXConstructorDecl *C) { Constructor = C; }
 
   SourceLocation getLocation() const { return Loc; }
@@ -1404,14 +1411,13 @@ class LambdaExpr : public Expr {
   unsigned *getArrayIndexStarts() const {
     return reinterpret_cast<unsigned *>(getStoredStmts() + NumCaptures + 1);
   }
-  
+
   /// \brief Retrieve the complete set of array-index variables.
   VarDecl **getArrayIndexVars() const {
-    unsigned ArrayIndexSize =
-        llvm::RoundUpToAlignment(sizeof(unsigned) * (NumCaptures + 1),
-                                 llvm::alignOf<VarDecl*>());
+    unsigned ArrayIndexSize = llvm::RoundUpToAlignment(
+        sizeof(unsigned) * (NumCaptures + 1), llvm::alignOf<VarDecl *>());
     return reinterpret_cast<VarDecl **>(
-        reinterpret_cast<char*>(getArrayIndexStarts()) + ArrayIndexSize);
+        reinterpret_cast<char *>(getArrayIndexStarts()) + ArrayIndexSize);
   }
 
 public:

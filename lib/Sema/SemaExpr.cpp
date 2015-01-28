@@ -76,8 +76,8 @@ bool Sema::CanUseDecl(NamedDecl *D) {
 static void DiagnoseUnusedOfDecl(Sema &S, NamedDecl *D, SourceLocation Loc) {
   // Warn if this is used but marked unused.
   if (D->hasAttr<UnusedAttr>()) {
-    const Decl *DC = cast<Decl>(S.getCurObjCLexicalContext());
-    if (!DC->hasAttr<UnusedAttr>())
+    const Decl *DC = cast_or_null<Decl>(S.getCurObjCLexicalContext());
+    if (DC && !DC->hasAttr<UnusedAttr>())
       S.Diag(Loc, diag::warn_used_but_marked_unused) << D->getDeclName();
   }
 }
@@ -5785,15 +5785,6 @@ QualType Sema::CheckConditionalOperands(ExprResult &Cond, ExprResult &LHS,
                                         ExprObjectKind &OK,
                                         SourceLocation QuestionLoc) {
 
-  if (!getLangOpts().CPlusPlus) {
-    // C cannot handle TypoExpr nodes on either side of a binop because it
-    // doesn't handle dependent types properly, so make sure any TypoExprs have
-    // been dealt with before checking the operands.
-    ExprResult CondResult = CorrectDelayedTyposInExpr(Cond);
-    if (!CondResult.isUsable()) return QualType();
-    Cond = CondResult;
-  }
-
   ExprResult LHSResult = CheckPlaceholderExpr(LHS.get());
   if (!LHSResult.isUsable()) return QualType();
   LHS = LHSResult;
@@ -6129,6 +6120,8 @@ static bool ExprLooksBoolean(Expr *E) {
     return IsLogicOp(OP->getOpcode());
   if (UnaryOperator *OP = dyn_cast<UnaryOperator>(E))
     return OP->getOpcode() == UO_LNot;
+  if (E->getType()->isPointerType())
+    return true;
 
   return false;
 }
@@ -6173,6 +6166,15 @@ ExprResult Sema::ActOnConditionalOp(SourceLocation QuestionLoc,
                                     SourceLocation ColonLoc,
                                     Expr *CondExpr, Expr *LHSExpr,
                                     Expr *RHSExpr) {
+  if (!getLangOpts().CPlusPlus) {
+    // C cannot handle TypoExpr nodes in the condition because it
+    // doesn't handle dependent types properly, so make sure any TypoExprs have
+    // been dealt with before checking the operands.
+    ExprResult CondResult = CorrectDelayedTyposInExpr(CondExpr);
+    if (!CondResult.isUsable()) return ExprError();
+    CondExpr = CondResult.get();
+  }
+
   // If this is the gnu "x ?: y" extension, analyze the types as though the LHS
   // was the condition.
   OpaqueValueExpr *opaqueValue = nullptr;
@@ -9380,90 +9382,6 @@ static inline UnaryOperatorKind ConvertTokenKindToUnaryOpcode(
   return Opc;
 }
 
-/// DiagnoseSelfMove - Emits a warning if a value is moved to itself.
-static void DiagnoseSelfMove(Sema &S, const Expr *LHSExpr, const Expr *RHSExpr,
-                             SourceLocation OpLoc) {
-  if (!S.ActiveTemplateInstantiations.empty())
-    return;
-
-  // Strip parens and casts away.
-  LHSExpr = LHSExpr->IgnoreParenImpCasts();
-  RHSExpr = RHSExpr->IgnoreParenImpCasts();
-
-  // Check for a call expression
-  const CallExpr *CE = dyn_cast<CallExpr>(RHSExpr);
-  if (!CE || CE->getNumArgs() != 1)
-    return;
-
-  // Check for a call to std::move
-  const FunctionDecl *FD = CE->getDirectCallee();
-  if (!FD || !FD->isInStdNamespace() || !FD->getIdentifier() ||
-      !FD->getIdentifier()->isStr("move"))
-    return;
-
-  // Get argument from std::move
-  RHSExpr = CE->getArg(0);
-
-  const DeclRefExpr *LHSDeclRef = dyn_cast<DeclRefExpr>(LHSExpr);
-  const DeclRefExpr *RHSDeclRef = dyn_cast<DeclRefExpr>(RHSExpr);
-
-  // Two DeclRefExpr's, check that the decls are the same.
-  if (LHSDeclRef && RHSDeclRef) {
-    if (!LHSDeclRef->getDecl() || !RHSDeclRef->getDecl())
-      return;
-    if (LHSDeclRef->getDecl()->getCanonicalDecl() !=
-        RHSDeclRef->getDecl()->getCanonicalDecl())
-      return;
-
-    S.Diag(OpLoc, diag::warn_self_move) << LHSExpr->getType()
-                                        << LHSExpr->getSourceRange()
-                                        << RHSExpr->getSourceRange();
-    return;
-  }
-
-  // Member variables require a different approach to check for self moves.
-  // MemberExpr's are the same if every nested MemberExpr refers to the same
-  // Decl and that the base Expr's are DeclRefExpr's with the same Decl or
-  // the base Expr's are CXXThisExpr's.
-  const Expr *LHSBase = LHSExpr;
-  const Expr *RHSBase = RHSExpr;
-  const MemberExpr *LHSME = dyn_cast<MemberExpr>(LHSExpr);
-  const MemberExpr *RHSME = dyn_cast<MemberExpr>(RHSExpr);
-  if (!LHSME || !RHSME)
-    return;
-
-  while (LHSME && RHSME) {
-    if (LHSME->getMemberDecl()->getCanonicalDecl() !=
-        RHSME->getMemberDecl()->getCanonicalDecl())
-      return;
-
-    LHSBase = LHSME->getBase();
-    RHSBase = RHSME->getBase();
-    LHSME = dyn_cast<MemberExpr>(LHSBase);
-    RHSME = dyn_cast<MemberExpr>(RHSBase);
-  }
-
-  LHSDeclRef = dyn_cast<DeclRefExpr>(LHSBase);
-  RHSDeclRef = dyn_cast<DeclRefExpr>(RHSBase);
-  if (LHSDeclRef && RHSDeclRef) {
-    if (!LHSDeclRef->getDecl() || !RHSDeclRef->getDecl())
-      return;
-    if (LHSDeclRef->getDecl()->getCanonicalDecl() !=
-        RHSDeclRef->getDecl()->getCanonicalDecl())
-      return;
-
-    S.Diag(OpLoc, diag::warn_self_move) << LHSExpr->getType()
-                                        << LHSExpr->getSourceRange()
-                                        << RHSExpr->getSourceRange();
-    return;
-  }
-
-  if (isa<CXXThisExpr>(LHSBase) && isa<CXXThisExpr>(RHSBase))
-    S.Diag(OpLoc, diag::warn_self_move) << LHSExpr->getType()
-                                        << LHSExpr->getSourceRange()
-                                        << RHSExpr->getSourceRange();
-}
-
 /// DiagnoseSelfAssignment - Emits a warning if a value is assigned to itself.
 /// This warning is only emitted for builtin assignment operations. It is also
 /// suppressed in the event of macro expansions.
@@ -9541,6 +9459,18 @@ static void checkObjCPointerIntrospection(Sema &S, ExprResult &L, ExprResult &R,
   }
 }
 
+static NamedDecl *getDeclFromExpr(Expr *E) {
+  if (!E)
+    return nullptr;
+  if (auto *DRE = dyn_cast<DeclRefExpr>(E))
+    return DRE->getDecl();
+  if (auto *ME = dyn_cast<MemberExpr>(E))
+    return ME->getMemberDecl();
+  if (auto *IRE = dyn_cast<ObjCIvarRefExpr>(E))
+    return IRE->getDecl();
+  return nullptr;
+}
+
 /// CreateBuiltinBinOp - Creates a new built-in binary operation with
 /// operator @p Opc at location @c TokLoc. This routine only supports
 /// built-in operations; ActOnBinOp handles overloaded operators.
@@ -9578,7 +9508,13 @@ ExprResult Sema::CreateBuiltinBinOp(SourceLocation OpLoc,
     // doesn't handle dependent types properly, so make sure any TypoExprs have
     // been dealt with before checking the operands.
     LHS = CorrectDelayedTyposInExpr(LHSExpr);
-    RHS = CorrectDelayedTyposInExpr(RHSExpr);
+    RHS = CorrectDelayedTyposInExpr(RHSExpr, [Opc, LHS](Expr *E) {
+      if (Opc != BO_Assign)
+        return ExprResult(E);
+      // Avoid correcting the RHS to the same Expr as the LHS.
+      Decl *D = getDeclFromExpr(E);
+      return (D && D == getDeclFromExpr(LHS.get())) ? ExprError() : E;
+    });
     if (!LHS.isUsable() || !RHS.isUsable())
       return ExprError();
   }
@@ -11650,7 +11586,8 @@ void Sema::MarkFunctionReferenced(SourceLocation Loc, FunctionDecl *Func,
   // We (incorrectly) mark overload resolution as an unevaluated context, so we
   // can just check that here. Skip the rest of this function if we've already
   // marked the function as used.
-  if (Func->isUsed(false) || !IsPotentiallyEvaluatedContext(*this)) {
+  if (Func->isUsed(/*CheckUsedAttr=*/false) ||
+      !IsPotentiallyEvaluatedContext(*this)) {
     // C++11 [temp.inst]p3:
     //   Unless a function template specialization has been explicitly
     //   instantiated or explicitly specialized, the function template
@@ -11702,7 +11639,7 @@ void Sema::MarkFunctionReferenced(SourceLocation Loc, FunctionDecl *Func,
     Destructor = cast<CXXDestructorDecl>(Destructor->getFirstDecl());
     if (Destructor->isDefaulted() && !Destructor->isDeleted())
       DefineImplicitDestructor(Loc, Destructor);
-    if (Destructor->isVirtual())
+    if (Destructor->isVirtual() && getLangOpts().AppleKext)
       MarkVTableUsed(Loc, Destructor->getParent());
   } else if (CXXMethodDecl *MethodDecl = dyn_cast<CXXMethodDecl>(Func)) {
     if (MethodDecl->isOverloadedOperator() &&
@@ -11722,7 +11659,7 @@ void Sema::MarkFunctionReferenced(SourceLocation Loc, FunctionDecl *Func,
         DefineImplicitLambdaToBlockPointerConversion(Loc, Conversion);
       else
         DefineImplicitLambdaToFunctionPointerConversion(Loc, Conversion);
-    } else if (MethodDecl->isVirtual())
+    } else if (MethodDecl->isVirtual() && getLangOpts().AppleKext)
       MarkVTableUsed(Loc, MethodDecl->getParent());
   }
 

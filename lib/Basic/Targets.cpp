@@ -525,6 +525,33 @@ public:
   }
 };
 
+template <typename Target>
+class PS4OSTargetInfo : public OSTargetInfo<Target> {
+protected:
+  void getOSDefines(const LangOptions &Opts, const llvm::Triple &Triple,
+                    MacroBuilder &Builder) const override {
+    Builder.defineMacro("__FreeBSD__", "9");
+    Builder.defineMacro("__FreeBSD_cc_version", "900001");
+    Builder.defineMacro("__KPRINTF_ATTRIBUTE__");
+    DefineStd(Builder, "unix", Opts);
+    Builder.defineMacro("__ELF__");
+    Builder.defineMacro("__PS4__");
+  }
+public:
+  PS4OSTargetInfo(const llvm::Triple &Triple) : OSTargetInfo<Target>(Triple) {
+    this->WCharType = this->UnsignedShort;
+
+    this->UserLabelPrefix = "";
+
+    switch (Triple.getArch()) {
+    default:
+    case llvm::Triple::x86_64:
+      this->MCountName = ".mcount";
+      break;
+    }
+  }
+};
+
 // Solaris target
 template<typename Target>
 class SolarisTargetInfo : public OSTargetInfo<Target> {
@@ -5376,9 +5403,6 @@ namespace {
       Builder.defineMacro("__riscv");
       Builder.defineMacro("__riscv__");
 
-      if(PointerWidth == 64){
-        Builder.defineMacro("__riscv64");
-      }
       // Target properties
       Builder.defineMacro("_RISCV_SZPTR", Twine((int)PointerWidth));
     }
@@ -5522,17 +5546,6 @@ namespace {
     }
     bool handleTargetFeatures(std::vector<std::string> &Features,
 			      DiagnosticsEngine &Diags) override {
-      for (unsigned i = 0, e = Features.size(); i != e; ++i){
-	if (Features[i] == "+rv64"){
-	  DescriptionString = ("e-m:e-n32:64-S128");
-	  PointerWidth = PointerAlign = 64;
-	  LongWidth = LongAlign = 64;
-	} else if (Features[i] == "+rv32"){
-	  DescriptionString = ("e-m:e-p:32:32-n32-S128");
-	  PointerWidth = PointerAlign = 32;
-	  LongWidth = LongAlign = 32;
-	}
-      }
       return true;
     }
     bool validateAsmConstraint(const char *&Name,
@@ -5612,6 +5625,30 @@ namespace {
       return true;
     }
   }
+  class RISCV32TargetInfo : public RISCVTargetInfo {
+  public:
+    RISCV32TargetInfo(const llvm::Triple &Triple) : RISCVTargetInfo(Triple) {
+      DescriptionString = ("e-m:e-p:32:32-i1:8:16-i8:8:16-f80:128-n32");
+	    PointerWidth = PointerAlign = 32;
+	    LongWidth = LongAlign = 32;
+    }
+    void getTargetDefines(const LangOptions &Opts,
+                          MacroBuilder &Builder) const override {
+    }
+  };
+
+  class RISCV64TargetInfo : public RISCVTargetInfo {
+  public:
+    RISCV64TargetInfo(const llvm::Triple &Triple) : RISCVTargetInfo(Triple) {
+      DescriptionString = ("e-m:e-i1:8:16-i8:8:16-i64:64-f80:128-n32:64");
+	    PointerWidth = PointerAlign = 64;
+	    LongWidth = LongAlign = 64;
+    }
+    void getTargetDefines(const LangOptions &Opts,
+                          MacroBuilder &Builder) const override {
+      Builder.defineMacro("__riscv64");
+    }
+  };
 }//end RISCV target info
 
 namespace {
@@ -6175,6 +6212,8 @@ public:
       : MipsTargetInfoBase(Triple, "o32", "mips32r2") {
     SizeType = UnsignedInt;
     PtrDiffType = SignedInt;
+    Int64Type = SignedLongLong;
+    IntMaxType = Int64Type;
     MaxAtomicPromoteWidth = MaxAtomicInlineWidth = 32;
   }
   bool setABI(const std::string &Name) override {
@@ -6304,6 +6343,8 @@ public:
     PointerWidth = PointerAlign = 64;
     SizeType = UnsignedLong;
     PtrDiffType = SignedLong;
+    Int64Type = SignedLong;
+    IntMaxType = Int64Type;
   }
 
   void setN32ABITypes() {
@@ -6311,6 +6352,8 @@ public:
     PointerWidth = PointerAlign = 32;
     SizeType = UnsignedInt;
     PtrDiffType = SignedInt;
+    Int64Type = SignedLongLong;
+    IntMaxType = Int64Type;
   }
 
   bool setABI(const std::string &Name) override {
@@ -6987,9 +7030,16 @@ static TargetInfo *AllocateTarget(const llvm::Triple &Triple) {
   case llvm::Triple::riscv:
     switch (os) {
     case llvm::Triple::Linux:
-      return new LinuxTargetInfo<RISCVTargetInfo>(Triple);
+      return new LinuxTargetInfo<RISCV32TargetInfo>(Triple);
     default:
-      return new RISCVTargetInfo(Triple);
+      return new RISCV32TargetInfo(Triple);
+    }
+  case llvm::Triple::riscv64:
+    switch (os) {
+    case llvm::Triple::Linux:
+      return new LinuxTargetInfo<RISCV64TargetInfo>(Triple);
+    default:
+      return new RISCV64TargetInfo(Triple);
     }
 
   case llvm::Triple::systemz:
@@ -7082,6 +7132,8 @@ static TargetInfo *AllocateTarget(const llvm::Triple &Triple) {
     }
     case llvm::Triple::NaCl:
       return new NaClTargetInfo<X86_64TargetInfo>(Triple);
+    case llvm::Triple::PS4:
+      return new PS4OSTargetInfo<X86_64TargetInfo>(Triple);
     default:
       return new X86_64TargetInfo(Triple);
     }

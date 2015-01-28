@@ -227,12 +227,12 @@ static void addDataFlowSanitizerPass(const PassManagerBuilder &Builder,
   PM.add(createDataFlowSanitizerPass(LangOpts.SanitizerBlacklistFile));
 }
 
-static TargetLibraryInfo *createTLI(llvm::Triple &TargetTriple,
-                                    const CodeGenOptions &CodeGenOpts) {
-  TargetLibraryInfo *TLI = new TargetLibraryInfo(TargetTriple);
+static TargetLibraryInfoImpl *createTLII(llvm::Triple &TargetTriple,
+                                         const CodeGenOptions &CodeGenOpts) {
+  TargetLibraryInfoImpl *TLII = new TargetLibraryInfoImpl(TargetTriple);
   if (!CodeGenOpts.SimplifyLibCalls)
-    TLI->disableAllFunctions();
-  return TLI;
+    TLII->disableAllFunctions();
+  return TLII;
 }
 
 static void addSymbolRewriterPass(const CodeGenOptions &Opts,
@@ -331,7 +331,7 @@ void EmitAssemblyHelper::CreatePasses() {
 
   // Figure out TargetLibraryInfo.
   Triple TargetTriple(TheModule->getTargetTriple());
-  PMBuilder.LibraryInfo = createTLI(TargetTriple, CodeGenOpts);
+  PMBuilder.LibraryInfo = createTLII(TargetTriple, CodeGenOpts);
 
   switch (Inlining) {
   case CodeGenOptions::NoInlining: break;
@@ -432,7 +432,7 @@ TargetMachine *EmitAssemblyHelper::CreateTargetMachine(bool MustCreateTM) {
                                     BackendArgs.data());
 
   std::string FeaturesStr;
-  if (TargetOpts.Features.size()) {
+  if (!TargetOpts.Features.empty()) {
     SubtargetFeatures Features;
     for (std::vector<std::string>::const_iterator
            it = TargetOpts.Features.begin(),
@@ -543,8 +543,9 @@ bool EmitAssemblyHelper::AddEmitPasses(BackendAction Action,
 
   // Add LibraryInfo.
   llvm::Triple TargetTriple(TheModule->getTargetTriple());
-  std::unique_ptr<TargetLibraryInfo> TLI(createTLI(TargetTriple, CodeGenOpts));
-  PM->add(new TargetLibraryInfoWrapperPass(*TLI));
+  std::unique_ptr<TargetLibraryInfoImpl> TLII(
+      createTLII(TargetTriple, CodeGenOpts));
+  PM->add(new TargetLibraryInfoWrapperPass(*TLII));
 
   // Add Target specific analysis passes.
   TM->addAnalysisPasses(*PM);
@@ -648,9 +649,8 @@ void clang::EmitBackendOutput(DiagnosticsEngine &Diags,
   // If an optional clang TargetInfo description string was passed in, use it to
   // verify the LLVM TargetMachine's DataLayout.
   if (AsmHelper.TM && !TDesc.empty()) {
-    std::string DLDesc = AsmHelper.TM->getSubtargetImpl()
-                             ->getDataLayout()
-                             ->getStringRepresentation();
+    std::string DLDesc =
+        AsmHelper.TM->getDataLayout()->getStringRepresentation();
     if (DLDesc != TDesc) {
       unsigned DiagID = Diags.getCustomDiagID(
           DiagnosticsEngine::Error, "backend data layout '%0' does not match "

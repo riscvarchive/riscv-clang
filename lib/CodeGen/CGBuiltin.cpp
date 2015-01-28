@@ -389,9 +389,14 @@ RValue CodeGenFunction::EmitBuiltinExpr(const FunctionDecl *FD,
     Value *ArgValue = EmitScalarExpr(E->getArg(0));
     llvm::Type *ArgType = ArgValue->getType();
 
-    Value *FnExpect = CGM.getIntrinsic(Intrinsic::expect, ArgType);
     Value *ExpectedValue = EmitScalarExpr(E->getArg(1));
+    // Don't generate llvm.expect on -O0 as the backend won't use it for
+    // anything.
+    // Note, we still IRGen ExpectedValue because it could have side-effects.
+    if (CGM.getCodeGenOpts().OptimizationLevel == 0)
+      return RValue::get(ArgValue);
 
+    Value *FnExpect = CGM.getIntrinsic(Intrinsic::expect, ArgType);
     Value *Result = Builder.CreateCall2(FnExpect, ArgValue, ExpectedValue,
                                         "expval");
     return RValue::get(Result);
@@ -1650,6 +1655,13 @@ RValue CodeGenFunction::EmitBuiltinExpr(const FunctionDecl *FD,
         Builder.CreateAlignedLoad(IntToPtr, /*Align=*/4, /*isVolatile=*/true);
     return RValue::get(Load);
   }
+
+  case Builtin::BI__exception_code:
+  case Builtin::BI_exception_code:
+    return RValue::get(EmitSEHExceptionCode());
+  case Builtin::BI__exception_info:
+  case Builtin::BI_exception_info:
+    return RValue::get(EmitSEHExceptionInfo());
   }
 
   // If this is an alias for a lib function (e.g. __builtin_sin), emit

@@ -1,5 +1,5 @@
-// RUN: %clang_cc1 -gline-tables-only -std=c++11 -fexceptions -fcxx-exceptions -S -emit-llvm %s -o - | FileCheck %s
-// RUN: %clang_cc1 -gline-tables-only -std=c++11 -fexceptions -fcxx-exceptions -S -emit-llvm %s -o - -triple i686-linux-gnu | FileCheck %s
+// RUN: %clang_cc1 -w -gline-tables-only -std=c++11 -fexceptions -fcxx-exceptions -S -emit-llvm %s -o - | FileCheck %s
+// RUN: %clang_cc1 -w -gline-tables-only -std=c++11 -fexceptions -fcxx-exceptions -S -emit-llvm %s -o - -triple i686-linux-gnu | FileCheck %s
 
 // XFAIL: win32
 
@@ -10,11 +10,11 @@ extern "C" __complex float *complex_sink();
 
 // CHECK-LABEL: define
 void f1() {
-#line 100
-  * // The store for the assignment should be attributed to the start of the
-      // assignment expression here, regardless of the location of subexpressions.
-      sink() = src();
+  *sink()
   // CHECK: store {{.*}}, !dbg [[DBG_F1:!.*]]
+#line 100
+      = //
+      src();
 }
 
 struct foo {
@@ -38,16 +38,20 @@ foo::foo()
 
 // CHECK-LABEL: define {{.*}}f2{{.*}}
 void f2() {
+  // CHECK: store float {{.*}} !dbg [[DBG_F2:!.*]]
+  *complex_sink()
 #line 300
-  * // CHECK: store float {{.*}} !dbg [[DBG_F2:!.*]]
-      complex_sink() = complex_src();
+      = //
+      complex_src();
 }
 
 // CHECK-LABEL: define
 void f3() {
+  // CHECK: store float {{.*}} !dbg [[DBG_F3:!.*]]
+  *complex_sink()
 #line 400
-  * // CHECK: store float {{.*}} !dbg [[DBG_F3:!.*]]
-      complex_sink() += complex_src();
+      += //
+      complex_src();
 }
 
 // CHECK-LABEL: define
@@ -70,9 +74,11 @@ agg agg_src();
 // CHECK-LABEL: define
 void f6() {
   agg x;
+  // CHECK: call void @llvm.memcpy{{.*}} !dbg [[DBG_F6:!.*]]
+  x
 #line 700
-  x // CHECK: call void @llvm.memcpy{{.*}} !dbg [[DBG_F6:!.*]]
-      = agg_src();
+      = //
+      agg_src();
 }
 
 // CHECK-LABEL: define
@@ -199,6 +205,14 @@ void f16(__complex float f) {
       f + 1;
 }
 
+// CHECK-LABEL: define
+void f17(int *x) {
+  1,
+// CHECK: getelementptr {{.*}}, !dbg [[DBG_F17:![0-9]*]]
+#line 1900
+      x[1];
+}
+
 // CHECK: [[DBG_F1]] = !MDLocation(line: 100,
 // CHECK: [[DBG_FOO_VALUE]] = !MDLocation(line: 200,
 // CHECK: [[DBG_FOO_REF]] = !MDLocation(line: 202,
@@ -221,3 +235,4 @@ void f16(__complex float f) {
 // CHECK: [[DBG_F14_CTOR_CALL]] = !MDLocation(line: 1600,
 // CHECK: [[DBG_F15]] = !MDLocation(line: 1700,
 // CHECK: [[DBG_F16]] = !MDLocation(line: 1800,
+// CHECK: [[DBG_F17]] = !MDLocation(line: 1900,

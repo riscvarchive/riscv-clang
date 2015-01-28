@@ -68,3 +68,46 @@ P* fun();
 id testRdar19038838(Rdar19038838 *obj) {
   return [obj newItem];
 }
+
+// rdar://19381786
+@interface rdar19381786 : NSObject
+{
+  rdar19381786* obj;
+}
+@property int count;
+@end
+
+@protocol PR 
+@property int count;
+@end
+
+@implementation rdar19381786
+-(void)test:(id)some : (id<PR>)qsome : (SEL)selsome
+{
+  [obj setCount : 100];
+  [some setCount : [some count]];
+  [qsome setCount : [qsome count]];
+}
+@end
+
+// rdar://19140114
+int NSOnState;
+int ArrNSOnState[4];
+@interface rdar19140114 : NSObject
+{
+  rdar19140114* menuItem;
+}
+@property int state;
+@end
+
+@implementation rdar19140114
+- (void) Meth {
+  [menuItem setState:NSOnState];
+  [menuItem setState :NSOnState];
+  [menuItem setState     :ArrNSOnState[NSOnState]];
+  [menuItem setState : NSOnState];
+  [menuItem setState:    NSOnState];
+  [menuItem setState: NSOnState];
+  [menuItem setState     :    NSOnState];
+}
+@end

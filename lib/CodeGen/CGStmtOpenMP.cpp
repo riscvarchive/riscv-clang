@@ -500,6 +500,89 @@ void CodeGenFunction::EmitOMPSimdDirective(const OMPSimdDirective &S) {
     DI->EmitLexicalBlockEnd(Builder, S.getSourceRange().getEnd());
 }
 
+void CodeGenFunction::EmitOMPForOuterLoop(OpenMPScheduleClauseKind ScheduleKind,
+                                          const OMPLoopDirective &S,
+                                          OMPPrivateScope &LoopScope,
+                                          llvm::Value *LB, llvm::Value *UB,
+                                          llvm::Value *ST, llvm::Value *IL,
+                                          llvm::Value *Chunk) {
+  auto &RT = CGM.getOpenMPRuntime();
+  assert(!RT.isStaticNonchunked(ScheduleKind, /* Chunked */ Chunk != nullptr) &&
+         "static non-chunked schedule does not need outer loop");
+  if (RT.isDynamic(ScheduleKind)) {
+    ErrorUnsupported(&S, "OpenMP loop with dynamic schedule");
+    return;
+  }
+
+  // Emit outer loop.
+  //
+  // OpenMP [2.7.1, Loop Construct, Description, table 2-1]
+  // When schedule(static, chunk_size) is specified, iterations are divided into
+  // chunks of size chunk_size, and the chunks are assigned to the threads in
+  // the team in a round-robin fashion in the order of the thread number.
+  //
+  // while(UB = min(UB, GlobalUB), idx = LB, idx < UB) {
+  //   while (idx <= UB) { BODY; ++idx; } // inner loop
+  //   LB = LB + ST;
+  //   UB = UB + ST;
+  // }
+  //
+  const Expr *IVExpr = S.getIterationVariable();
+  const unsigned IVSize = getContext().getTypeSize(IVExpr->getType());
+  const bool IVSigned = IVExpr->getType()->hasSignedIntegerRepresentation();
+
+  RT.EmitOMPForInit(*this, S.getLocStart(), ScheduleKind, IVSize, IVSigned, IL,
+                    LB, UB, ST, Chunk);
+  auto LoopExit = getJumpDestInCurrentScope("omp.dispatch.end");
+
+  // Start the loop with a block that tests the condition.
+  auto CondBlock = createBasicBlock("omp.dispatch.cond");
+  EmitBlock(CondBlock);
+  LoopStack.push(CondBlock);
+
+  llvm::Value *BoolCondVal = nullptr;
+  // UB = min(UB, GlobalUB)
+  EmitIgnoredExpr(S.getEnsureUpperBound());
+  // IV = LB
+  EmitIgnoredExpr(S.getInit());
+  // IV < UB
+  BoolCondVal = EvaluateExprAsBool(S.getCond(false));
+
+  // If there are any cleanups between here and the loop-exit scope,
+  // create a block to stage a loop exit along.
+  auto ExitBlock = LoopExit.getBlock();
+  if (LoopScope.requiresCleanups())
+    ExitBlock = createBasicBlock("omp.dispatch.cleanup");
+
+  auto LoopBody = createBasicBlock("omp.dispatch.body");
+  Builder.CreateCondBr(BoolCondVal, LoopBody, ExitBlock);
+  if (ExitBlock != LoopExit.getBlock()) {
+    EmitBlock(ExitBlock);
+    EmitBranchThroughCleanup(LoopExit);
+  }
+  EmitBlock(LoopBody);
+
+  // Create a block for the increment.
+  auto Continue = getJumpDestInCurrentScope("omp.dispatch.inc");
+  BreakContinueStack.push_back(BreakContinue(LoopExit, Continue));
+
+  EmitOMPInnerLoop(S, LoopScope);
+
+  EmitBlock(Continue.getBlock());
+  BreakContinueStack.pop_back();
+  // Emit "LB = LB + Stride", "UB = UB + Stride".
+  EmitIgnoredExpr(S.getNextLowerBound());
+  EmitIgnoredExpr(S.getNextUpperBound());
+
+  EmitBranch(CondBlock);
+  LoopStack.pop();
+  // Emit the fall-through block.
+  EmitBlock(LoopExit.getBlock());
+
+  // Tell the runtime we are done.
+  RT.EmitOMPForFinish(*this, S.getLocStart(), ScheduleKind);
+}
+
 /// \brief Emit a helper variable and return corresponding lvalue.
 static LValue EmitOMPHelperVar(CodeGenFunction &CGF,
                                const DeclRefExpr *Helper) {
@@ -581,8 +664,13 @@ void CodeGenFunction::EmitOMPWorksharingLoop(const OMPLoopDirective &S) {
         EmitOMPInnerLoop(S, LoopScope);
         // Tell the runtime we are done.
         RT.EmitOMPForFinish(*this, S.getLocStart(), ScheduleKind);
-      } else
-        ErrorUnsupported(&S, "OpenMP loop with requested schedule");
+      } else {
+        // Emit the outer loop, which requests its work chunk [LB..UB] from
+        // runtime and runs the inner loop to process it.
+        EmitOMPForOuterLoop(ScheduleKind, S, LoopScope, LB.getAddress(),
+                            UB.getAddress(), ST.getAddress(), IL.getAddress(),
+                            Chunk);
+      }
     }
     // We're now done with the loop, so jump to the continuation block.
     EmitBranch(ContBlock);
@@ -691,8 +779,125 @@ void CodeGenFunction::EmitOMPOrderedDirective(const OMPOrderedDirective &) {
   llvm_unreachable("CodeGen for 'omp ordered' is not supported yet.");
 }
 
-void CodeGenFunction::EmitOMPAtomicDirective(const OMPAtomicDirective &) {
-  llvm_unreachable("CodeGen for 'omp atomic' is not supported yet.");
+static llvm::Value *convertToScalarValue(CodeGenFunction &CGF, RValue Val,
+                                         QualType SrcType, QualType DestType) {
+  assert(CGF.hasScalarEvaluationKind(DestType) &&
+         "DestType must have scalar evaluation kind.");
+  assert(!Val.isAggregate() && "Must be a scalar or complex.");
+  return Val.isScalar()
+             ? CGF.EmitScalarConversion(Val.getScalarVal(), SrcType, DestType)
+             : CGF.EmitComplexToScalarConversion(Val.getComplexVal(), SrcType,
+                                                 DestType);
+}
+
+static CodeGenFunction::ComplexPairTy
+convertToComplexValue(CodeGenFunction &CGF, RValue Val, QualType SrcType,
+                      QualType DestType) {
+  assert(CGF.getEvaluationKind(DestType) == TEK_Complex &&
+         "DestType must have complex evaluation kind.");
+  CodeGenFunction::ComplexPairTy ComplexVal;
+  if (Val.isScalar()) {
+    // Convert the input element to the element type of the complex.
+    auto DestElementType = DestType->castAs<ComplexType>()->getElementType();
+    auto ScalarVal =
+        CGF.EmitScalarConversion(Val.getScalarVal(), SrcType, DestElementType);
+    ComplexVal = CodeGenFunction::ComplexPairTy(
+        ScalarVal, llvm::Constant::getNullValue(ScalarVal->getType()));
+  } else {
+    assert(Val.isComplex() && "Must be a scalar or complex.");
+    auto SrcElementType = SrcType->castAs<ComplexType>()->getElementType();
+    auto DestElementType = DestType->castAs<ComplexType>()->getElementType();
+    ComplexVal.first = CGF.EmitScalarConversion(
+        Val.getComplexVal().first, SrcElementType, DestElementType);
+    ComplexVal.second = CGF.EmitScalarConversion(
+        Val.getComplexVal().second, SrcElementType, DestElementType);
+  }
+  return ComplexVal;
+}
+
+static void EmitOMPAtomicReadExpr(CodeGenFunction &CGF, bool IsSeqCst,
+                                  const Expr *X, const Expr *V,
+                                  SourceLocation Loc) {
+  // v = x;
+  assert(V->isLValue() && "V of 'omp atomic read' is not lvalue");
+  assert(X->isLValue() && "X of 'omp atomic read' is not lvalue");
+  LValue XLValue = CGF.EmitLValue(X);
+  LValue VLValue = CGF.EmitLValue(V);
+  RValue Res = XLValue.isGlobalReg() ? CGF.EmitLoadOfLValue(XLValue, Loc)
+                                     : CGF.EmitAtomicLoad(XLValue, Loc);
+  // OpenMP, 2.12.6, atomic Construct
+  // Any atomic construct with a seq_cst clause forces the atomically
+  // performed operation to include an implicit flush operation without a
+  // list.
+  if (IsSeqCst)
+    CGF.CGM.getOpenMPRuntime().EmitOMPFlush(CGF, llvm::None, Loc);
+  switch (CGF.getEvaluationKind(V->getType())) {
+  case TEK_Scalar:
+    CGF.EmitStoreOfScalar(
+        convertToScalarValue(CGF, Res, X->getType(), V->getType()), VLValue);
+    break;
+  case TEK_Complex:
+    CGF.EmitStoreOfComplex(
+        convertToComplexValue(CGF, Res, X->getType(), V->getType()), VLValue,
+        /*isInit=*/false);
+    break;
+  case TEK_Aggregate:
+    llvm_unreachable("Must be a scalar or complex.");
+  }
+}
+
+static void EmitOMPAtomicExpr(CodeGenFunction &CGF, OpenMPClauseKind Kind,
+                              bool IsSeqCst, const Expr *X, const Expr *V,
+                              const Expr *, SourceLocation Loc) {
+  switch (Kind) {
+  case OMPC_read:
+    EmitOMPAtomicReadExpr(CGF, IsSeqCst, X, V, Loc);
+    break;
+  case OMPC_write:
+  case OMPC_update:
+  case OMPC_capture:
+    llvm_unreachable("CodeGen for 'omp atomic clause' is not supported yet.");
+  case OMPC_if:
+  case OMPC_final:
+  case OMPC_num_threads:
+  case OMPC_private:
+  case OMPC_firstprivate:
+  case OMPC_lastprivate:
+  case OMPC_reduction:
+  case OMPC_safelen:
+  case OMPC_collapse:
+  case OMPC_default:
+  case OMPC_seq_cst:
+  case OMPC_shared:
+  case OMPC_linear:
+  case OMPC_aligned:
+  case OMPC_copyin:
+  case OMPC_copyprivate:
+  case OMPC_flush:
+  case OMPC_proc_bind:
+  case OMPC_schedule:
+  case OMPC_ordered:
+  case OMPC_nowait:
+  case OMPC_untied:
+  case OMPC_threadprivate:
+  case OMPC_mergeable:
+  case OMPC_unknown:
+    llvm_unreachable("Clause is not allowed in 'omp atomic'.");
+  }
+}
+
+void CodeGenFunction::EmitOMPAtomicDirective(const OMPAtomicDirective &S) {
+  bool IsSeqCst = S.getSingleClause(/*K=*/OMPC_seq_cst);
+  OpenMPClauseKind Kind = OMPC_unknown;
+  for (auto *C : S.clauses()) {
+    // Find first clause (skip seq_cst clause, if it is first).
+    if (C->getClauseKind() != OMPC_seq_cst) {
+      Kind = C->getClauseKind();
+      break;
+    }
+  }
+  EmitOMPAtomicExpr(*this, Kind, IsSeqCst, S.getX(), S.getV(), S.getExpr(),
+                    S.getLocStart());
 }
 
 void CodeGenFunction::EmitOMPTargetDirective(const OMPTargetDirective &) {

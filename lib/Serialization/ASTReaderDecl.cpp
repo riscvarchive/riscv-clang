@@ -107,7 +107,7 @@ namespace clang {
     void ReadCXXDefinitionData(struct CXXRecordDecl::DefinitionData &Data,
                                const RecordData &R, unsigned &I);
     void MergeDefinitionData(CXXRecordDecl *D,
-                             struct CXXRecordDecl::DefinitionData &NewDD);
+                             struct CXXRecordDecl::DefinitionData &&NewDD);
 
     static NamedDecl *getAnonymousDeclForMerging(ASTReader &Reader,
                                                  DeclContext *DC,
@@ -205,6 +205,8 @@ namespace clang {
       operator T*() const { return dyn_cast_or_null<T>(Existing); }
     };
 
+    static DeclContext *getPrimaryContextForMerging(ASTReader &Reader,
+                                                    DeclContext *DC);
     FindExistingResult findExisting(NamedDecl *D);
 
   public:
@@ -1353,10 +1355,24 @@ void ASTDeclReader::ReadCXXDefinitionData(
 }
 
 void ASTDeclReader::MergeDefinitionData(
-    CXXRecordDecl *D, struct CXXRecordDecl::DefinitionData &MergeDD) {
+    CXXRecordDecl *D, struct CXXRecordDecl::DefinitionData &&MergeDD) {
   assert(D->DefinitionData.getNotUpdated() &&
          "merging class definition into non-definition");
   auto &DD = *D->DefinitionData.getNotUpdated();
+
+  if (Reader.PendingFakeDefinitionData.count(&DD)) {
+    // We faked up this definition data because we found a class for which we'd
+    // not yet loaded the definition. Replace it with the real thing now.
+    Reader.PendingFakeDefinitionData.erase(&DD);
+    assert(!DD.IsLambda && !MergeDD.IsLambda && "faked up lambda definition?");
+
+    // Don't change which declaration is the definition; that is required
+    // to be invariant once we select it.
+    auto *Def = DD.Definition;
+    DD = std::move(MergeDD);
+    DD.Definition = Def;
+    return;
+  }
 
   // If the new definition has new special members, let the name lookup
   // code know that it needs to look in the new definition too.
@@ -1457,16 +1473,21 @@ void ASTDeclReader::ReadCXXRecordDefinition(CXXRecordDecl *D) {
 
   ReadCXXDefinitionData(*DD, Record, Idx);
 
-  // If we're reading an update record, we might already have a definition for
-  // this record. If so, just merge into it.
-  if (D->DefinitionData.getNotUpdated()) {
-    MergeDefinitionData(D, *DD);
+  // We might already have a definition for this record. This can happen either
+  // because we're reading an update record, or because we've already done some
+  // merging. Either way, just merge into it.
+  CXXRecordDecl *Canon = D->getCanonicalDecl();
+  if (auto *CanonDD = Canon->DefinitionData.getNotUpdated()) {
+    if (CanonDD->Definition != DD->Definition)
+      Reader.MergedDeclContexts.insert(
+          std::make_pair(DD->Definition, CanonDD->Definition));
+    MergeDefinitionData(Canon, std::move(*DD));
+    D->DefinitionData = Canon->DefinitionData;
     return;
   }
 
   // Propagate the DefinitionData pointer to the canonical declaration, so
   // that all other deserialized declarations will see it.
-  CXXRecordDecl *Canon = D->getCanonicalDecl();
   if (Canon == D) {
     D->DefinitionData = DD;
     D->IsCompleteDefinition = true;
@@ -1478,7 +1499,7 @@ void ASTDeclReader::ReadCXXRecordDefinition(CXXRecordDecl *D) {
         std::make_pair(D, CanonDD->Definition));
     D->DefinitionData = Canon->DefinitionData;
     D->IsCompleteDefinition = false;
-    MergeDefinitionData(D, *DD);
+    MergeDefinitionData(D, std::move(*DD));
   } else {
     Canon->DefinitionData = DD;
     D->DefinitionData = Canon->DefinitionData;
@@ -1823,7 +1844,7 @@ ASTDeclReader::VisitClassTemplateSpecializationDeclImpl(
         // definition.
         if (auto *DDD = D->DefinitionData.getNotUpdated()) {
           if (auto *CanonDD = CanonSpec->DefinitionData.getNotUpdated()) {
-            MergeDefinitionData(CanonSpec, *DDD);
+            MergeDefinitionData(CanonSpec, std::move(*DDD));
             Reader.PendingDefinitions.erase(D);
             Reader.MergedDeclContexts.insert(
                 std::make_pair(D, CanonDD->Definition));
@@ -2121,6 +2142,7 @@ void ASTDeclReader::mergeTemplatePattern(RedeclarableTemplateDecl *D,
   auto *ExistingPattern = Existing->getTemplatedDecl();
   RedeclarableResult Result(Reader, DPattern->getCanonicalDecl()->getGlobalID(),
                             DPattern->getKind());
+
   if (auto *DClass = dyn_cast<CXXRecordDecl>(DPattern)) {
     // Merge with any existing definition.
     // FIXME: This is duplicated in several places. Refactor.
@@ -2128,7 +2150,7 @@ void ASTDeclReader::mergeTemplatePattern(RedeclarableTemplateDecl *D,
         cast<CXXRecordDecl>(ExistingPattern)->getCanonicalDecl();
     if (auto *DDD = DClass->DefinitionData.getNotUpdated()) {
       if (auto *ExistingDD = ExistingClass->DefinitionData.getNotUpdated()) {
-        MergeDefinitionData(ExistingClass, *DDD);
+        MergeDefinitionData(ExistingClass, std::move(*DDD));
         Reader.PendingDefinitions.erase(DClass);
         Reader.MergedDeclContexts.insert(
             std::make_pair(DClass, ExistingDD->Definition));
@@ -2529,18 +2551,33 @@ static bool isSameEntity(NamedDecl *X, NamedDecl *Y) {
 
 /// Find the context in which we should search for previous declarations when
 /// looking for declarations to merge.
-static DeclContext *getPrimaryContextForMerging(DeclContext *DC) {
+DeclContext *ASTDeclReader::getPrimaryContextForMerging(ASTReader &Reader,
+                                                        DeclContext *DC) {
   if (NamespaceDecl *ND = dyn_cast<NamespaceDecl>(DC))
     return ND->getOriginalNamespace();
 
-  // There is one tricky case here: if DC is a class with no definition, then
-  // we're merging a declaration whose definition is added by an update record,
-  // but we've not yet loaded that update record. In this case, we use the
-  // canonical declaration for merging until we get a real definition.
-  // FIXME: When we add a definition, we may need to move the partial lookup
-  // information from the canonical declaration onto the chosen definition.
-  if (CXXRecordDecl *RD = dyn_cast<CXXRecordDecl>(DC))
-    return RD->getPrimaryContext();
+  if (CXXRecordDecl *RD = dyn_cast<CXXRecordDecl>(DC)) {
+    // Try to dig out the definition.
+    auto *DD = RD->DefinitionData.getNotUpdated();
+    if (!DD)
+      DD = RD->getCanonicalDecl()->DefinitionData.getNotUpdated();
+
+    // If there's no definition yet, then DC's definition is added by an update
+    // record, but we've not yet loaded that update record. In this case, we
+    // commit to DC being the canonical definition now, and will fix this when
+    // we load the update record.
+    if (!DD) {
+      DD = new (Reader.Context) struct CXXRecordDecl::DefinitionData(RD);
+      RD->IsCompleteDefinition = true;
+      RD->DefinitionData = DD;
+      RD->getCanonicalDecl()->DefinitionData = DD;
+
+      // Track that we did this horrible thing so that we can fix it later.
+      Reader.PendingFakeDefinitionData.insert(DD);
+    }
+
+    return DD->Definition;
+  }
 
   if (EnumDecl *ED = dyn_cast<EnumDecl>(DC))
     return ED->getASTContext().getLangOpts().CPlusPlus? ED->getDefinition()
@@ -2550,21 +2587,27 @@ static DeclContext *getPrimaryContextForMerging(DeclContext *DC) {
 }
 
 ASTDeclReader::FindExistingResult::~FindExistingResult() {
+  // Record that we had a typedef name for linkage whether or not we merge
+  // with that declaration.
+  if (TypedefNameForLinkage) {
+    DeclContext *DC = New->getDeclContext()->getRedeclContext();
+    Reader.ImportedTypedefNamesForLinkage.insert(
+        std::make_pair(std::make_pair(DC, TypedefNameForLinkage), New));
+    return;
+  }
+
   if (!AddResult || Existing)
     return;
 
   DeclarationName Name = New->getDeclName();
   DeclContext *DC = New->getDeclContext()->getRedeclContext();
-  if (TypedefNameForLinkage) {
-    Reader.ImportedTypedefNamesForLinkage.insert(
-        std::make_pair(std::make_pair(DC, TypedefNameForLinkage), New));
-  } else if (!Name) {
+  if (!Name) {
     assert(needsAnonymousDeclarationNumber(New));
     setAnonymousDeclForMerging(Reader, New->getLexicalDeclContext(),
                                AnonymousDeclNumber, New);
   } else if (DC->isTranslationUnit() && Reader.SemaObj) {
     Reader.SemaObj->IdResolver.tryAddTopLevelDecl(New, Name);
-  } else if (DeclContext *MergeDC = getPrimaryContextForMerging(DC)) {
+  } else if (DeclContext *MergeDC = getPrimaryContextForMerging(Reader, DC)) {
     // Add the declaration to its redeclaration context so later merging
     // lookups will find it.
     MergeDC->makeDeclVisibleInContextImpl(New, /*Internal*/true);
@@ -2710,7 +2753,7 @@ ASTDeclReader::FindExistingResult ASTDeclReader::findExisting(NamedDecl *D) {
           return FindExistingResult(Reader, D, Existing, AnonymousDeclNumber,
                                     TypedefNameForLinkage);
     }
-  } else if (DeclContext *MergeDC = getPrimaryContextForMerging(DC)) {
+  } else if (DeclContext *MergeDC = getPrimaryContextForMerging(Reader, DC)) {
     DeclContext::lookup_result R = MergeDC->noload_lookup(Name);
     for (DeclContext::lookup_iterator I = R.begin(), E = R.end(); I != E; ++I) {
       if (NamedDecl *Existing = getDeclForMerging(*I, TypedefNameForLinkage))
@@ -3513,13 +3556,25 @@ void ASTDeclReader::UpdateDecl(Decl *D, ModuleFile &ModuleFile,
   while (Idx < Record.size()) {
     switch ((DeclUpdateKind)Record[Idx++]) {
     case UPD_CXX_ADDED_IMPLICIT_MEMBER: {
+      auto *RD = cast<CXXRecordDecl>(D);
       // FIXME: If we also have an update record for instantiating the
       // definition of D, we need that to happen before we get here.
       Decl *MD = Reader.ReadDecl(ModuleFile, Record, Idx);
       assert(MD && "couldn't read decl from update record");
       // FIXME: We should call addHiddenDecl instead, to add the member
       // to its DeclContext.
-      cast<CXXRecordDecl>(D)->addedMember(MD);
+      RD->addedMember(MD);
+
+      // If we've added a new special member to a class definition that is not
+      // the canonical definition, then we need special member lookups in the
+      // canonical definition to also look into our class.
+      auto *DD = RD->DefinitionData.getNotUpdated();
+      if (DD && DD->Definition != RD) {
+        auto &Merged = Reader.MergedLookups[DD->Definition];
+        // FIXME: Avoid the linear-time scan here.
+        if (std::find(Merged.begin(), Merged.end(), RD) == Merged.end())
+          Merged.push_back(RD);
+      }
       break;
     }
 
@@ -3583,11 +3638,13 @@ void ASTDeclReader::UpdateDecl(Decl *D, ModuleFile &ModuleFile,
 
     case UPD_CXX_INSTANTIATED_CLASS_DEFINITION: {
       auto *RD = cast<CXXRecordDecl>(D);
-      bool HadDefinition = RD->getDefinition();
+      bool HadRealDefinition = RD->getDefinition() &&
+                               !Reader.PendingFakeDefinitionData.count(
+                                   RD->DefinitionData.getNotUpdated());
       ReadCXXRecordDefinition(RD);
       // Visible update is handled separately.
       uint64_t LexicalOffset = Record[Idx++];
-      if (!HadDefinition && LexicalOffset) {
+      if (!HadRealDefinition && LexicalOffset) {
         RD->setHasExternalLexicalStorage(true);
         Reader.ReadDeclContextStorage(ModuleFile, ModuleFile.DeclsCursor,
                                           std::make_pair(LexicalOffset, 0),

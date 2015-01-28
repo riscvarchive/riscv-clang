@@ -6146,12 +6146,6 @@ public:
 
   ExprResult TransformLambdaExpr(LambdaExpr *E) { return Owned(E); }
 
-  ExprResult TransformOpaqueValueExpr(OpaqueValueExpr *E) {
-    if (Expr *SE = E->getSourceExpr())
-      return TransformExpr(SE);
-    return BaseTransform::TransformOpaqueValueExpr(E);
-  }
-
   ExprResult Transform(Expr *E) {
     ExprResult Res;
     while (true) {
@@ -6171,15 +6165,18 @@ public:
     while (!AmbiguousTypoExprs.empty()) {
       auto TE  = AmbiguousTypoExprs.back();
       auto Cached = TransformCache[TE];
-      AmbiguousTypoExprs.pop_back();
+      auto &State = SemaRef.getTypoExprState(TE);
+      State.Consumer->saveCurrentPosition();
       TransformCache.erase(TE);
       if (!TryTransform(E).isInvalid()) {
-        SemaRef.getTypoExprState(TE).Consumer->resetCorrectionStream();
+        State.Consumer->resetCorrectionStream();
         TransformCache.erase(TE);
         Res = ExprError();
         break;
-      } else
-        TransformCache[TE] = Cached;
+      }
+      AmbiguousTypoExprs.remove(TE);
+      State.Consumer->restoreSavedPosition();
+      TransformCache[TE] = Cached;
     }
 
     // Ensure that all of the TypoExprs within the current Expr have been found.
