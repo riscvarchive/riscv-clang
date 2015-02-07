@@ -5634,6 +5634,7 @@ namespace {
     }
     void getTargetDefines(const LangOptions &Opts,
                           MacroBuilder &Builder) const override {
+      RISCVTargetInfo::getTargetDefines(Opts, Builder);
     }
   };
 
@@ -5646,6 +5647,7 @@ namespace {
     }
     void getTargetDefines(const LangOptions &Opts,
                           MacroBuilder &Builder) const override {
+      RISCVTargetInfo::getTargetDefines(Opts, Builder);
       Builder.defineMacro("__riscv64");
     }
   };
