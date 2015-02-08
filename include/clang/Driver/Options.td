@@ -1304,7 +1304,7 @@ def mprfchw : Flag<["-"], "mprfchw">, Group<m_x86_Features_Group>;
 def mrdseed : Flag<["-"], "mrdseed">, Group<m_x86_Features_Group>;
 def madx : Flag<["-"], "madx">, Group<m_x86_Features_Group>;
 def mriscv_EQ : Joined<["-"], "mriscv=">, Group<m_Group>,
-  HelpText<"Specify RISCV Extensions i.e. RV64IAM">;
+  HelpText<"Specify RISCV Extensions i.e. RV64IAM">, Flags<[DriverOption]>;
 def msha : Flag<["-"], "msha">, Group<m_x86_Features_Group>;
 def mcx16 : Flag<["-"], "mcx16">, Group<m_x86_Features_Group>;
 def mips16 : Flag<["-"], "mips16">, Group<m_Group>;
