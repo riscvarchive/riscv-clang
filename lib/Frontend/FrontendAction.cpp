@@ -44,7 +44,7 @@ public:
   explicit DelegatingDeserializationListener(
       ASTDeserializationListener *Previous, bool DeletePrevious)
       : Previous(Previous), DeletePrevious(DeletePrevious) {}
-  virtual ~DelegatingDeserializationListener() {
+  ~DelegatingDeserializationListener() override {
     if (DeletePrevious)
       delete Previous;
   }
@@ -71,7 +71,7 @@ public:
       Previous->SelectorRead(ID, Sel);
   }
   void MacroDefinitionRead(serialization::PreprocessedEntityID PPID,
-                           MacroDefinition *MD) override {
+                           MacroDefinitionRecord *MD) override {
     if (Previous)
       Previous->MacroDefinitionRead(PPID, MD);
   }
@@ -191,7 +191,8 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
     IntrusiveRefCntPtr<DiagnosticsEngine> Diags(&CI.getDiagnostics());
 
     std::unique_ptr<ASTUnit> AST =
-        ASTUnit::LoadFromASTFile(InputFile, Diags, CI.getFileSystemOpts());
+        ASTUnit::LoadFromASTFile(InputFile, CI.getPCHContainerOperations(),
+                                 Diags, CI.getFileSystemOpts());
 
     if (!AST)
       goto failure;
@@ -262,18 +263,19 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
     FileManager &FileMgr = CI.getFileManager();
     PreprocessorOptions &PPOpts = CI.getPreprocessorOpts();
     StringRef PCHInclude = PPOpts.ImplicitPCHInclude;
+    std::string SpecificModuleCachePath = CI.getSpecificModuleCachePath();
     if (const DirectoryEntry *PCHDir = FileMgr.getDirectory(PCHInclude)) {
       std::error_code EC;
       SmallString<128> DirNative;
       llvm::sys::path::native(PCHDir->getName(), DirNative);
       bool Found = false;
-      for (llvm::sys::fs::directory_iterator Dir(DirNative.str(), EC), DirEnd;
+      for (llvm::sys::fs::directory_iterator Dir(DirNative, EC), DirEnd;
            Dir != DirEnd && !EC; Dir.increment(EC)) {
         // Check whether this is an acceptable AST file.
-        if (ASTReader::isAcceptableASTFile(Dir->path(), FileMgr,
-                                           CI.getLangOpts(),
-                                           CI.getTargetOpts(),
-                                           CI.getPreprocessorOpts())) {
+        if (ASTReader::isAcceptableASTFile(
+                Dir->path(), FileMgr, *CI.getPCHContainerOperations(),
+                CI.getLangOpts(), CI.getTargetOpts(), CI.getPreprocessorOpts(),
+                SpecificModuleCachePath)) {
           PPOpts.ImplicitPCHInclude = Dir->path();
           Found = true;
           break;
@@ -441,8 +443,8 @@ bool FrontendAction::Execute() {
   if (CI.shouldBuildGlobalModuleIndex() && CI.hasFileManager() &&
       CI.hasPreprocessor()) {
     GlobalModuleIndex::writeIndex(
-      CI.getFileManager(),
-      CI.getPreprocessor().getHeaderSearchInfo().getModuleCachePath());
+        CI.getFileManager(), *CI.getPCHContainerOperations(),
+        CI.getPreprocessor().getHeaderSearchInfo().getModuleCachePath());
   }
 
   return true;
@@ -466,16 +468,12 @@ void FrontendAction::EndSourceFile() {
   // FIXME: There is more per-file stuff we could just drop here?
   bool DisableFree = CI.getFrontendOpts().DisableFree;
   if (DisableFree) {
-    if (!isCurrentFileAST()) {
-      CI.resetAndLeakSema();
-      CI.resetAndLeakASTContext();
-    }
+    CI.resetAndLeakSema();
+    CI.resetAndLeakASTContext();
     BuryPointer(CI.takeASTConsumer().get());
   } else {
-    if (!isCurrentFileAST()) {
-      CI.setSema(nullptr);
-      CI.setASTContext(nullptr);
-    }
+    CI.setSema(nullptr);
+    CI.setASTContext(nullptr);
     CI.setASTConsumer(nullptr);
   }
 
@@ -492,13 +490,16 @@ void FrontendAction::EndSourceFile() {
   // FrontendAction.
   CI.clearOutputFiles(/*EraseFiles=*/shouldEraseOutputFiles());
 
-  // FIXME: Only do this if DisableFree is set.
   if (isCurrentFileAST()) {
-    CI.resetAndLeakSema();
-    CI.resetAndLeakASTContext();
-    CI.resetAndLeakPreprocessor();
-    CI.resetAndLeakSourceManager();
-    CI.resetAndLeakFileManager();
+    if (DisableFree) {
+      CI.resetAndLeakPreprocessor();
+      CI.resetAndLeakSourceManager();
+      CI.resetAndLeakFileManager();
+    } else {
+      CI.setPreprocessor(nullptr);
+      CI.setSourceManager(nullptr);
+      CI.setFileManager(nullptr);
+    }
   }
 
   setCompilerInstance(nullptr);

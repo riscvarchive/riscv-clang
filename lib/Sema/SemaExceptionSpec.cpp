@@ -167,13 +167,13 @@ Sema::ResolveExceptionSpec(SourceLocation Loc, const FunctionProtoType *FPT) {
 void
 Sema::UpdateExceptionSpec(FunctionDecl *FD,
                           const FunctionProtoType::ExceptionSpecInfo &ESI) {
-  for (auto *Redecl : FD->redecls())
-    Context.adjustExceptionSpec(cast<FunctionDecl>(Redecl), ESI);
-
   // If we've fully resolved the exception specification, notify listeners.
   if (!isUnresolvedExceptionSpec(ESI.Type))
     if (auto *Listener = getASTMutationListener())
       Listener->ResolvedExceptionSpec(FD);
+
+  for (auto *Redecl : FD->redecls())
+    Context.adjustExceptionSpec(cast<FunctionDecl>(Redecl), ESI);
 }
 
 /// Determine whether a function has an implicitly-generated exception
@@ -437,7 +437,7 @@ bool Sema::CheckEquivalentExceptionSpec(const PartialDiagnostic &DiagID,
       OldNR != FunctionProtoType::NR_NoNoexcept &&
       NewNR != FunctionProtoType::NR_NoNoexcept) {
     Diag(NewLoc, DiagID);
-    if (NoteID.getDiagID() != 0)
+    if (NoteID.getDiagID() != 0 && OldLoc.isValid())
       Diag(OldLoc, NoteID);
     return true;
   }
@@ -518,7 +518,7 @@ bool Sema::CheckEquivalentExceptionSpec(const PartialDiagnostic &DiagID,
     }
 
     Diag(NewLoc, DiagID);
-    if (NoteID.getDiagID() != 0)
+    if (NoteID.getDiagID() != 0 && OldLoc.isValid())
       Diag(OldLoc, NoteID);
     return true;
   }
@@ -547,7 +547,7 @@ bool Sema::CheckEquivalentExceptionSpec(const PartialDiagnostic &DiagID,
     return false;
   }
   Diag(NewLoc, DiagID);
-  if (NoteID.getDiagID() != 0)
+  if (NoteID.getDiagID() != 0 && OldLoc.isValid())
     Diag(OldLoc, NoteID);
   return true;
 }
@@ -1041,6 +1041,7 @@ CanThrowResult Sema::canThrow(const Expr *E) {
   case Expr::CXXReinterpretCastExprClass:
   case Expr::CXXStdInitializerListExprClass:
   case Expr::DesignatedInitExprClass:
+  case Expr::DesignatedInitUpdateExprClass:
   case Expr::ExprWithCleanupsClass:
   case Expr::ExtVectorElementExprClass:
   case Expr::InitListExprClass:
@@ -1135,6 +1136,7 @@ CanThrowResult Sema::canThrow(const Expr *E) {
   case Expr::ImaginaryLiteralClass:
   case Expr::ImplicitValueInitExprClass:
   case Expr::IntegerLiteralClass:
+  case Expr::NoInitExprClass:
   case Expr::ObjCEncodeExprClass:
   case Expr::ObjCStringLiteralClass:
   case Expr::ObjCBoolLiteralExprClass:

@@ -110,7 +110,7 @@ namespace inner_init {
   struct D { C &&r; };
   D d1 { 0 }; // ok, 0 implicitly converts to C
   D d2 { { 0 } }; // ok, { 0 } calls C(0)
-  D d3 { { { 0 } } }; // ok, { { 0 } } calls C({ 0 })
+  D d3 { { { 0 } } }; // ok, { { 0 } } calls C({ 0 }), expected-warning {{braces around scalar init}}
   D d4 { { { { 0 } } } }; // expected-error {{no matching constructor for initialization of 'inner_init::C &&'}}
 
   struct E { explicit E(int); }; // expected-note 2{{here}}
@@ -124,4 +124,8 @@ namespace PR20844 {
   struct A {};
   struct B { operator A&(); } b;
   A &a{b}; // expected-error {{excess elements}} expected-note {{in initialization of temporary of type 'PR20844::A'}}
+}
+
+namespace PR21834 {
+const int &a = (const int &){0}; // expected-error {{cannot bind to an initializer list}}
 }

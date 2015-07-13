@@ -61,6 +61,12 @@ class Driver {
     CLMode
   } Mode;
 
+  enum SaveTempsMode {
+    SaveTempsNone,
+    SaveTempsCwd,
+    SaveTempsObj
+  } SaveTemps;
+
 public:
   // Diag - Forwarding function for diagnostics.
   DiagnosticBuilder Diag(unsigned DiagID) const {
@@ -85,7 +91,7 @@ public:
   /// The path to the compiler resource directory.
   std::string ResourceDir;
 
-  /// A prefix directory used to emulated a limited subset of GCC's '-Bprefix'
+  /// A prefix directory used to emulate a limited subset of GCC's '-Bprefix'
   /// functionality.
   /// FIXME: This type of customization should be removed in favor of the
   /// universal driver when it is ready.
@@ -232,6 +238,9 @@ public:
     InstalledDir = Value;
   }
 
+  bool isSaveTempsEnabled() const { return SaveTemps != SaveTempsNone; }
+  bool isSaveTempsObj() const { return SaveTemps == SaveTempsObj; }
+
   /// @}
   /// @name Primary Functionality
   /// @{
@@ -253,7 +262,7 @@ public:
 
   /// ParseArgStrings - Parse the given list of strings into an
   /// ArgList.
-  llvm::opt::InputArgList *ParseArgStrings(ArrayRef<const char *> Args);
+  llvm::opt::InputArgList ParseArgStrings(ArrayRef<const char *> Args);
 
   /// BuildInputs - Construct the list of inputs and their types from 
   /// the given arguments.
@@ -348,8 +357,8 @@ public:
   /// \p Phase on the \p Input, taking in to account arguments
   /// like -fsyntax-only or --analyze.
   std::unique_ptr<Action>
-  ConstructPhaseAction(const llvm::opt::ArgList &Args, phases::ID Phase,
-                       std::unique_ptr<Action> Input) const;
+  ConstructPhaseAction(const ToolChain &TC, const llvm::opt::ArgList &Args,
+                       phases::ID Phase, std::unique_ptr<Action> Input) const;
 
   /// BuildJobsForAction - Construct the jobs to perform for the
   /// action \p A.

@@ -13,23 +13,23 @@
 #include "llvm/Option/Arg.h"
 #include "llvm/Option/ArgList.h"
 #include <string>
+#include <vector>
 
 namespace clang {
 namespace driver {
 
-class Driver;
 class ToolChain;
 
 class SanitizerArgs {
   SanitizerSet Sanitizers;
   SanitizerSet RecoverableSanitizers;
+  SanitizerSet TrapSanitizers;
 
-  std::string BlacklistFile;
-  int SanitizeCoverage;
+  std::vector<std::string> BlacklistFiles;
+  int CoverageFeatures;
   int MsanTrackOrigins;
   int AsanFieldPadding;
   bool AsanZeroBaseShadow;
-  bool UbsanTrapOnError;
   bool AsanSharedRuntime;
   bool LinkCXXRuntimes;
 
@@ -47,8 +47,10 @@ class SanitizerArgs {
   }
   bool needsUbsanRt() const;
   bool needsDfsanRt() const { return Sanitizers.has(SanitizerKind::DataFlow); }
+  bool needsSafeStackRt() const {
+    return Sanitizers.has(SanitizerKind::SafeStack);
+  }
 
-  bool sanitizesVptr() const { return Sanitizers.has(SanitizerKind::Vptr); }
   bool requiresPIE() const;
   bool needsUnwindTables() const;
   bool linkCXXRuntimes() const { return LinkCXXRuntimes; }
@@ -57,7 +59,6 @@ class SanitizerArgs {
 
  private:
   void clear();
-  bool getDefaultBlacklist(const Driver &D, std::string &BLPath);
 };
 
 }  // namespace driver

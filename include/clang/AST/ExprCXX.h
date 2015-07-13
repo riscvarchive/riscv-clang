@@ -1452,6 +1452,9 @@ public:
     return CaptureDefaultLoc;
   }
 
+  /// \brief Determine whether one of this lambda's captures is an init-capture.
+  bool isInitCapture(const LambdaCapture *Capture) const;
+
   /// \brief An iterator that walks over the captures of the lambda,
   /// both implicit and explicit.
   typedef const Capture *capture_iterator;
@@ -1691,6 +1694,10 @@ public:
   ///   If the allocation function returns null, initialization shall
   ///   not be done, the deallocation function shall not be called,
   ///   and the value of the new-expression shall be null.
+  ///
+  /// C++ DR1748:
+  ///   If the allocation function is a reserved placement allocation
+  ///   function that returns null, the behavior is undefined.
   ///
   /// An allocation function is not allowed to return null unless it
   /// has a non-throwing exception-specification.  The '03 rule is

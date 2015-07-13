@@ -33,8 +33,8 @@ class ObjCPropertyImplDecl;
 class CXXCtorInitializer;
 
 class ObjCListBase {
-  ObjCListBase(const ObjCListBase &) LLVM_DELETED_FUNCTION;
-  void operator=(const ObjCListBase &) LLVM_DELETED_FUNCTION;
+  ObjCListBase(const ObjCListBase &) = delete;
+  void operator=(const ObjCListBase &) = delete;
 protected:
   /// List is an array of pointers to objects that are not owned by this object.
   void **List;
@@ -141,7 +141,7 @@ private:
 
   // NOTE: VC++ treats enums as signed, avoid using the ObjCDeclQualifier enum
   /// in, inout, etc.
-  unsigned objcDeclQualifier : 6;
+  unsigned objcDeclQualifier : 7;
 
   /// \brief Indicates whether this method has a related result type.
   unsigned RelatedResultType : 1;
@@ -820,8 +820,8 @@ public:
   ObjCMethodDecl *getCategoryInstanceMethod(Selector Sel) const;
   ObjCMethodDecl *getCategoryClassMethod(Selector Sel) const;
   ObjCMethodDecl *getCategoryMethod(Selector Sel, bool isInstance) const {
-    return isInstance ? getInstanceMethod(Sel)
-                      : getClassMethod(Sel);
+    return isInstance ? getCategoryInstanceMethod(Sel)
+                      : getCategoryClassMethod(Sel);
   }
 
   typedef ObjCProtocolList::iterator protocol_iterator;
@@ -2002,8 +2002,8 @@ class ObjCImplementationDecl : public ObjCImplDecl {
   SourceLocation IvarRBraceLoc;
   
   /// Support for ivar initialization.
-  /// IvarInitializers - The arguments used to initialize the ivars
-  CXXCtorInitializer **IvarInitializers;
+  /// \brief The arguments used to initialize the ivars
+  LazyCXXCtorInitializersPtr IvarInitializers;
   unsigned NumIvarInitializers;
 
   /// Do the ivars of this class require initialization other than
@@ -2052,17 +2052,20 @@ public:
   }
 
   /// init_begin() - Retrieve an iterator to the first initializer.
-  init_iterator       init_begin()       { return IvarInitializers; }
+  init_iterator init_begin() {
+    const auto *ConstThis = this;
+    return const_cast<init_iterator>(ConstThis->init_begin());
+  }
   /// begin() - Retrieve an iterator to the first initializer.
-  init_const_iterator init_begin() const { return IvarInitializers; }
+  init_const_iterator init_begin() const;
 
   /// init_end() - Retrieve an iterator past the last initializer.
   init_iterator       init_end()       {
-    return IvarInitializers + NumIvarInitializers;
+    return init_begin() + NumIvarInitializers;
   }
   /// end() - Retrieve an iterator past the last initializer.
   init_const_iterator init_end() const {
-    return IvarInitializers + NumIvarInitializers;
+    return init_begin() + NumIvarInitializers;
   }
   /// getNumArgs - Number of ivars which must be initialized.
   unsigned getNumIvarInitializers() const {
@@ -2200,13 +2203,17 @@ public:
     OBJC_PR_atomic    = 0x100,
     OBJC_PR_weak      = 0x200,
     OBJC_PR_strong    = 0x400,
-    OBJC_PR_unsafe_unretained = 0x800
+    OBJC_PR_unsafe_unretained = 0x800,
+    /// Indicates that the nullability of the type was spelled with a
+    /// property attribute rather than a type qualifier.
+    OBJC_PR_nullability = 0x1000,
+    OBJC_PR_null_resettable = 0x2000
     // Adding a property should change NumPropertyAttrsBits
   };
 
   enum {
     /// \brief Number of bits fitting all the property attributes.
-    NumPropertyAttrsBits = 12
+    NumPropertyAttrsBits = 14
   };
 
   enum SetterKind { Assign, Retain, Copy, Weak };
@@ -2214,7 +2221,8 @@ public:
 private:
   SourceLocation AtLoc;   // location of \@property
   SourceLocation LParenLoc; // location of '(' starting attribute list or null.
-  TypeSourceInfo *DeclType;
+  QualType DeclType;
+  TypeSourceInfo *DeclTypeSourceInfo;
   unsigned PropertyAttributes : NumPropertyAttrsBits;
   unsigned PropertyAttributesAsWritten : NumPropertyAttrsBits;
   // \@required/\@optional
@@ -2229,12 +2237,13 @@ private:
 
   ObjCPropertyDecl(DeclContext *DC, SourceLocation L, IdentifierInfo *Id,
                    SourceLocation AtLocation,  SourceLocation LParenLocation,
-                   TypeSourceInfo *T)
+                   QualType T, TypeSourceInfo *TSI,
+                   PropertyControl propControl)
     : NamedDecl(ObjCProperty, DC, L, Id), AtLoc(AtLocation), 
-      LParenLoc(LParenLocation), DeclType(T),
+      LParenLoc(LParenLocation), DeclType(T), DeclTypeSourceInfo(TSI),
       PropertyAttributes(OBJC_PR_noattr),
       PropertyAttributesAsWritten(OBJC_PR_noattr),
-      PropertyImplementation(None),
+      PropertyImplementation(propControl),
       GetterName(Selector()),
       SetterName(Selector()),
       GetterMethodDecl(nullptr), SetterMethodDecl(nullptr),
@@ -2245,7 +2254,8 @@ public:
                                   SourceLocation L,
                                   IdentifierInfo *Id, SourceLocation AtLocation,
                                   SourceLocation LParenLocation,
-                                  TypeSourceInfo *T,
+                                  QualType T,
+                                  TypeSourceInfo *TSI,
                                   PropertyControl propControl = None);
   
   static ObjCPropertyDecl *CreateDeserialized(ASTContext &C, unsigned ID);
@@ -2256,9 +2266,14 @@ public:
   SourceLocation getLParenLoc() const { return LParenLoc; }
   void setLParenLoc(SourceLocation L) { LParenLoc = L; }
 
-  TypeSourceInfo *getTypeSourceInfo() const { return DeclType; }
-  QualType getType() const { return DeclType->getType(); }
-  void setType(TypeSourceInfo *T) { DeclType = T; }
+  TypeSourceInfo *getTypeSourceInfo() const { return DeclTypeSourceInfo; }
+
+  QualType getType() const { return DeclType; }
+
+  void setType(QualType T, TypeSourceInfo *TSI) { 
+    DeclType = T;
+    DeclTypeSourceInfo = TSI; 
+  }
 
   PropertyAttributeKind getPropertyAttributes() const {
     return PropertyAttributeKind(PropertyAttributes);

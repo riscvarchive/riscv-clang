@@ -1,4 +1,5 @@
-// RUN: %clang_cc1 -triple x86_64-windows-msvc -fms-extensions -fsyntax-only -verify %s
+// RUN: %clang_cc1 -std=c++03 -fblocks -triple x86_64-windows-msvc -fms-extensions -fsyntax-only -fexceptions -fcxx-exceptions -verify %s
+// RUN: %clang_cc1 -std=c++11 -fblocks -triple x86_64-windows-msvc -fms-extensions -fsyntax-only -fexceptions -fcxx-exceptions -verify %s
 
 // Basic usage should work.
 int safe_div(int n, int d) {
@@ -37,6 +38,7 @@ void instantiate_bad_scope_tmpl() {
   bad_builtin_scope_template<might_crash>();
 }
 
+#if __cplusplus < 201103L
 // FIXME: Diagnose this case. For now we produce undef in codegen.
 template <typename T, T FN()>
 T func_template() {
@@ -46,3 +48,68 @@ void inject_builtins() {
   func_template<void *, __exception_info>();
   func_template<unsigned long, __exception_code>();
 }
+#endif
+
+void use_seh_after_cxx() {
+  try { // expected-note {{conflicting 'try' here}}
+    might_crash();
+  } catch (int) {
+  }
+  __try { // expected-error {{cannot use C++ 'try' in the same function as SEH '__try'}}
+    might_crash();
+  } __except(1) {
+  }
+}
+
+void use_cxx_after_seh() {
+  __try { // expected-note {{conflicting '__try' here}}
+    might_crash();
+  } __except(1) {
+  }
+  try { // expected-error {{cannot use C++ 'try' in the same function as SEH '__try'}}
+    might_crash();
+  } catch (int) {
+  }
+}
+
+#if __cplusplus >= 201103L
+void use_seh_in_lambda() {
+  ([]() {
+    __try {
+      might_crash();
+    } __except(1) {
+    }
+  })();
+  try {
+    might_crash();
+  } catch (int) {
+  }
+}
+#endif
+
+void use_seh_in_block() {
+  void (^b)() = ^{
+    __try { // expected-error {{cannot use SEH '__try' in blocks, captured regions, or Obj-C method decls}}
+      might_crash();
+    } __except(1) {
+    }
+  };
+  try {
+    b();
+  } catch (int) {
+  }
+}
+
+void (^use_seh_in_global_block)() = ^{
+  __try { // expected-error {{cannot use SEH '__try' in blocks, captured regions, or Obj-C method decls}}
+    might_crash();
+  } __except(1) {
+  }
+};
+
+void (^use_cxx_in_global_block)() = ^{
+  try {
+    might_crash();
+  } catch(int) {
+  }
+};

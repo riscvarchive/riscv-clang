@@ -36,6 +36,7 @@ TargetInfo::TargetInfo(const llvm::Triple &T) : TargetOpts(), Triple(T) {
   LongWidth = LongAlign = 32;
   LongLongWidth = LongLongAlign = 64;
   SuitableAlign = 64;
+  DefaultAlignForAttributeAligned = 128;
   MinGlobalAlign = 0;
   HalfWidth = 16;
   HalfAlign = 16;
@@ -655,6 +656,7 @@ bool TargetCXXABI::tryParse(llvm::StringRef name) {
     .Case("ios", iOS)
     .Case("itanium", GenericItanium)
     .Case("microsoft", Microsoft)
+    .Case("mips", GenericMIPS)
     .Default(unknown);
   if (kind == unknown) return false;
 
