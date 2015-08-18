@@ -144,12 +144,14 @@
 //
 // MSEXT-CXX:#define _NATIVE_WCHAR_T_DEFINED 1
 // MSEXT-CXX:#define _WCHAR_T_DEFINED 1
+// MSEXT-CXX:#define __BOOL_DEFINED 1
 //
 //
 // RUN: %clang_cc1 -x c++ -fno-wchar -fms-extensions -triple i686-pc-win32 -E -dM < /dev/null | FileCheck -check-prefix MSEXT-CXX-NOWCHAR %s
 //
 // MSEXT-CXX-NOWCHAR-NOT:#define _NATIVE_WCHAR_T_DEFINED 1
 // MSEXT-CXX-NOWCHAR-NOT:#define _WCHAR_T_DEFINED 1
+// MSEXT-CXX-NOWCHAR:#define __BOOL_DEFINED 1
 //
 // 
 // RUN: %clang_cc1 -x objective-c -E -dM < /dev/null | FileCheck -check-prefix OBJC %s
@@ -6603,8 +6605,15 @@
 // PPC-DARWIN:#define __powerpc__ 1
 // PPC-DARWIN:#define __ppc__ 1
 //
-// RUN: %clang_cc1 -x cl -E -dM -ffreestanding -triple=amdgcn < /dev/null | FileCheck -check-prefix AMDGCN %s
+// RUN: %clang_cc1 -x cl -E -dM -ffreestanding -triple=amdgcn < /dev/null | FileCheck -check-prefix AMDGCN --check-prefix AMDGPU %s
+// RUN: %clang_cc1 -x cl -E -dM -ffreestanding -triple=r600 -target-cpu caicos < /dev/null | FileCheck --check-prefix AMDGPU %s
+//
+// AMDGPU:#define cl_khr_byte_addressable_store 1
 // AMDGCN:#define cl_khr_fp64 1
+// AMDGPU:#define cl_khr_global_int32_base_atomics 1
+// AMDGPU:#define cl_khr_global_int32_extended_atomics 1
+// AMDGPU:#define cl_khr_local_int32_base_atomics 1
+// AMDGPU:#define cl_khr_local_int32_extended_atomics 1
 
 // RUN: %clang_cc1 -E -dM -ffreestanding -triple=s390x-none-none -fno-signed-char < /dev/null | FileCheck -check-prefix S390X %s
 //
@@ -6975,14 +6984,15 @@
 // SPARC:#define __sparcv8 1
 // SPARC:#define sparc 1
 // 
-// RUN: %clang_cc1 -E -dM -ffreestanding -triple=sparc-none-netbsd < /dev/null | FileCheck -check-prefix SPARC-NETBSD %s
-// SPARC-NETBSD:#define __INTPTR_FMTd__ "ld"
-// SPARC-NETBSD:#define __INTPTR_FMTi__ "li"
-// SPARC-NETBSD:#define __INTPTR_MAX__ 2147483647L
-// SPARC-NETBSD:#define __INTPTR_TYPE__ long int
-// SPARC-NETBSD:#define __PTRDIFF_TYPE__ long int
-// SPARC-NETBSD:#define __SIZE_TYPE__ long unsigned int
-// SPARC-NETBSD:#define __UINTPTR_TYPE__ long unsigned int
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple=sparc-none-netbsd < /dev/null | FileCheck -check-prefix SPARC-NETOPENBSD %s
+// RUN: %clang_cc1 -E -dM -ffreestanding -triple=sparc-none-openbsd < /dev/null | FileCheck -check-prefix SPARC-NETOPENBSD %s
+// SPARC-NETOPENBSD:#define __INTPTR_FMTd__ "ld"
+// SPARC-NETOPENBSD:#define __INTPTR_FMTi__ "li"
+// SPARC-NETOPENBSD:#define __INTPTR_MAX__ 2147483647L
+// SPARC-NETOPENBSD:#define __INTPTR_TYPE__ long int
+// SPARC-NETOPENBSD:#define __PTRDIFF_TYPE__ long int
+// SPARC-NETOPENBSD:#define __SIZE_TYPE__ long unsigned int
+// SPARC-NETOPENBSD:#define __UINTPTR_TYPE__ long unsigned int
 
 // RUN: %clang_cc1 -E -dM -ffreestanding -triple=tce-none-none < /dev/null | FileCheck -check-prefix TCE %s
 //

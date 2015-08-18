@@ -106,6 +106,10 @@ public:
                                      QualType DestTy) override;
 
   bool EmitBadCastCall(CodeGenFunction &CGF) override;
+  bool canEmitAvailableExternallyVTable(
+      const CXXRecordDecl *RD) const override {
+    return false;
+  }
 
   llvm::Value *
   GetVirtualBaseClassOffset(CodeGenFunction &CGF, llvm::Value *This,
@@ -253,7 +257,6 @@ public:
     SmallString<256> OutName;
     llvm::raw_svector_ostream Out(OutName);
     getMangleContext().mangleCXXVirtualDisplacementMap(SrcRD, DstRD, Out);
-    Out.flush();
     StringRef MangledName = OutName.str();
 
     if (auto *VDispMap = CGM.getModule().getNamedGlobal(MangledName))
@@ -849,10 +852,19 @@ void MicrosoftCXXABI::emitRethrow(CodeGenFunction &CGF, bool isNoReturn) {
 
 namespace {
 struct CallEndCatchMSVC : EHScopeStack::Cleanup {
-  CallEndCatchMSVC() {}
+  llvm::CatchPadInst *CPI;
+
+  CallEndCatchMSVC(llvm::CatchPadInst *CPI) : CPI(CPI) {}
+
   void Emit(CodeGenFunction &CGF, Flags flags) override {
-    CGF.EmitNounwindRuntimeCall(
-        CGF.CGM.getIntrinsic(llvm::Intrinsic::eh_endcatch));
+    if (CGF.CGM.getCodeGenOpts().NewMSEH) {
+      llvm::BasicBlock *BB = CGF.createBasicBlock("catchret.dest");
+      CGF.Builder.CreateCatchRet(BB, CPI);
+      CGF.EmitBlock(BB);
+    } else {
+      CGF.EmitNounwindRuntimeCall(
+          CGF.CGM.getIntrinsic(llvm::Intrinsic::eh_endcatch));
+    }
   }
 };
 }
@@ -862,25 +874,39 @@ void MicrosoftCXXABI::emitBeginCatch(CodeGenFunction &CGF,
   // In the MS ABI, the runtime handles the copy, and the catch handler is
   // responsible for destruction.
   VarDecl *CatchParam = S->getExceptionDecl();
-  llvm::Value *Exn = CGF.getExceptionFromSlot();
-  llvm::Function *BeginCatch =
-      CGF.CGM.getIntrinsic(llvm::Intrinsic::eh_begincatch);
-
+  llvm::Value *Exn = nullptr;
+  llvm::Function *BeginCatch = nullptr;
+  llvm::CatchPadInst *CPI = nullptr;
+  bool NewEH = CGF.CGM.getCodeGenOpts().NewMSEH;
+  if (!NewEH) {
+    Exn = CGF.getExceptionFromSlot();
+    BeginCatch = CGF.CGM.getIntrinsic(llvm::Intrinsic::eh_begincatch);
+  } else {
+    llvm::BasicBlock *CatchPadBB =
+        CGF.Builder.GetInsertBlock()->getSinglePredecessor();
+    CPI = cast<llvm::CatchPadInst>(CatchPadBB->getFirstNonPHI());
+  }
   // If this is a catch-all or the catch parameter is unnamed, we don't need to
   // emit an alloca to the object.
   if (!CatchParam || !CatchParam->getDeclName()) {
-    llvm::Value *Args[2] = {Exn, llvm::Constant::getNullValue(CGF.Int8PtrTy)};
-    CGF.EmitNounwindRuntimeCall(BeginCatch, Args);
-    CGF.EHStack.pushCleanup<CallEndCatchMSVC>(NormalCleanup);
+    if (!NewEH) {
+      llvm::Value *Args[2] = {Exn, llvm::Constant::getNullValue(CGF.Int8PtrTy)};
+      CGF.EmitNounwindRuntimeCall(BeginCatch, Args);
+    }
+    CGF.EHStack.pushCleanup<CallEndCatchMSVC>(NormalCleanup, CPI);
     return;
   }
 
   CodeGenFunction::AutoVarEmission var = CGF.EmitAutoVarAlloca(*CatchParam);
-  llvm::Value *ParamAddr =
-      CGF.Builder.CreateBitCast(var.getObjectAddress(CGF), CGF.Int8PtrTy);
-  llvm::Value *Args[2] = {Exn, ParamAddr};
-  CGF.EmitNounwindRuntimeCall(BeginCatch, Args);
-  CGF.EHStack.pushCleanup<CallEndCatchMSVC>(NormalCleanup);
+  if (!NewEH) {
+    llvm::Value *ParamAddr =
+        CGF.Builder.CreateBitCast(var.getObjectAddress(CGF), CGF.Int8PtrTy);
+    llvm::Value *Args[2] = {Exn, ParamAddr};
+    CGF.EmitNounwindRuntimeCall(BeginCatch, Args);
+  } else {
+    CPI->setArgOperand(1, var.getObjectAddress(CGF));
+  }
+  CGF.EHStack.pushCleanup<CallEndCatchMSVC>(NormalCleanup, CPI);
   CGF.EmitAutoVarCleanups(var);
 }
 
@@ -1466,20 +1492,27 @@ void MicrosoftCXXABI::emitVTableBitSetEntries(VPtrInfo *Info,
 
   llvm::NamedMDNode *BitsetsMD =
       CGM.getModule().getOrInsertNamedMetadata("llvm.bitsets");
-  CharUnits PointerWidth = getContext().toCharUnitsFromBits(
-      getContext().getTargetInfo().getPointerWidth(0));
 
-  // FIXME: Add blacklisting scheme.
+  // The location of the first virtual function pointer in the virtual table,
+  // aka the "address point" on Itanium. This is at offset 0 if RTTI is
+  // disabled, or sizeof(void*) if RTTI is enabled.
+  CharUnits AddressPoint =
+      getContext().getLangOpts().RTTIData
+          ? getContext().toCharUnitsFromBits(
+                getContext().getTargetInfo().getPointerWidth(0))
+          : CharUnits::Zero();
 
   if (Info->PathToBaseWithVPtr.empty()) {
-    BitsetsMD->addOperand(
-        CGM.CreateVTableBitSetEntry(VTable, PointerWidth, RD));
+    if (!CGM.IsCFIBlacklistedRecord(RD))
+      BitsetsMD->addOperand(
+          CGM.CreateVTableBitSetEntry(VTable, AddressPoint, RD));
     return;
   }
 
   // Add a bitset entry for the least derived base belonging to this vftable.
-  BitsetsMD->addOperand(CGM.CreateVTableBitSetEntry(
-      VTable, PointerWidth, Info->PathToBaseWithVPtr.back()));
+  if (!CGM.IsCFIBlacklistedRecord(Info->PathToBaseWithVPtr.back()))
+    BitsetsMD->addOperand(CGM.CreateVTableBitSetEntry(
+        VTable, AddressPoint, Info->PathToBaseWithVPtr.back()));
 
   // Add a bitset entry for each derived class that is laid out at the same
   // offset as the least derived base.
@@ -1497,14 +1530,15 @@ void MicrosoftCXXABI::emitVTableBitSetEntries(VPtrInfo *Info,
       Offset = VBI->second.VBaseOffset;
     if (!Offset.isZero())
       return;
-    BitsetsMD->addOperand(
-        CGM.CreateVTableBitSetEntry(VTable, PointerWidth, DerivedRD));
+    if (!CGM.IsCFIBlacklistedRecord(DerivedRD))
+      BitsetsMD->addOperand(
+          CGM.CreateVTableBitSetEntry(VTable, AddressPoint, DerivedRD));
   }
 
   // Finally do the same for the most derived class.
-  if (Info->FullOffsetInMDC.isZero())
+  if (Info->FullOffsetInMDC.isZero() && !CGM.IsCFIBlacklistedRecord(RD))
     BitsetsMD->addOperand(
-        CGM.CreateVTableBitSetEntry(VTable, PointerWidth, RD));
+        CGM.CreateVTableBitSetEntry(VTable, AddressPoint, RD));
 }
 
 void MicrosoftCXXABI::emitVTableDefinitions(CodeGenVTables &CGVT,
@@ -1707,7 +1741,7 @@ static const CXXRecordDecl *getClassAtVTableLocation(ASTContext &Ctx,
   for (auto &&B : RD->bases()) {
     const CXXRecordDecl *Base = B.getType()->getAsCXXRecordDecl();
     CharUnits BaseOffset = Layout.getBaseClassOffset(Base);
-    if (BaseOffset <= Offset && BaseOffset > MaxBaseOffset) {
+    if (BaseOffset <= Offset && BaseOffset >= MaxBaseOffset) {
       MaxBase = Base;
       MaxBaseOffset = BaseOffset;
     }
@@ -1715,7 +1749,7 @@ static const CXXRecordDecl *getClassAtVTableLocation(ASTContext &Ctx,
   for (auto &&B : RD->vbases()) {
     const CXXRecordDecl *Base = B.getType()->getAsCXXRecordDecl();
     CharUnits BaseOffset = Layout.getVBaseClassOffset(Base);
-    if (BaseOffset <= Offset && BaseOffset > MaxBaseOffset) {
+    if (BaseOffset <= Offset && BaseOffset >= MaxBaseOffset) {
       MaxBase = Base;
       MaxBaseOffset = BaseOffset;
     }
@@ -1824,7 +1858,6 @@ llvm::Function *MicrosoftCXXABI::EmitVirtualMemPtrThunk(
   SmallString<256> ThunkName;
   llvm::raw_svector_ostream Out(ThunkName);
   getMangleContext().mangleVirtualMemPtrThunk(MD, Out);
-  Out.flush();
 
   // If the thunk has been generated previously, just return it.
   if (llvm::GlobalValue *GV = CGM.getModule().getNamedValue(ThunkName))
@@ -1900,7 +1933,6 @@ MicrosoftCXXABI::getAddrOfVBTable(const VPtrInfo &VBT, const CXXRecordDecl *RD,
   SmallString<256> OutName;
   llvm::raw_svector_ostream Out(OutName);
   getMangleContext().mangleCXXVBTable(RD, VBT.MangledPath, Out);
-  Out.flush();
   StringRef Name = OutName.str();
 
   llvm::ArrayType *VBTableType =
@@ -2312,7 +2344,6 @@ void MicrosoftCXXABI::EmitGuardedInit(CodeGenFunction &CGF, const VarDecl &D,
                                                                Out);
       else
         getMangleContext().mangleStaticGuardVariable(&D, Out);
-      Out.flush();
     }
 
     // Create the guard variable with a zero-initializer. Just absorb linkage,
@@ -3717,7 +3748,6 @@ MicrosoftCXXABI::getAddrOfCXXCtorClosure(const CXXConstructorDecl *CD,
   SmallString<256> ThunkName;
   llvm::raw_svector_ostream Out(ThunkName);
   getMangleContext().mangleCXXCtor(CD, CT, Out);
-  Out.flush();
 
   // If the thunk has been generated previously, just return it.
   if (llvm::GlobalValue *GV = CGM.getModule().getNamedValue(ThunkName))
@@ -3732,6 +3762,8 @@ MicrosoftCXXABI::getAddrOfCXXCtorClosure(const CXXConstructorDecl *CD,
       ThunkTy, getLinkageForRTTI(RecordTy), ThunkName.str(), &CGM.getModule());
   ThunkFn->setCallingConv(static_cast<llvm::CallingConv::ID>(
       FnInfo.getEffectiveCallingConvention()));
+  if (ThunkFn->isWeakForLinker())
+    ThunkFn->setComdat(CGM.getModule().getOrInsertComdat(ThunkFn->getName()));
   bool IsCopy = CT == Ctor_CopyingClosure;
 
   // Start codegen.
@@ -3793,9 +3825,7 @@ MicrosoftCXXABI::getAddrOfCXXCtorClosure(const CXXConstructorDecl *CD,
   CodeGenFunction::RunCleanupsScope Cleanups(CGF);
 
   const auto *FPT = CD->getType()->castAs<FunctionProtoType>();
-  ConstExprIterator ArgBegin(ArgVec.data()),
-      ArgEnd(ArgVec.data() + ArgVec.size());
-  CGF.EmitCallArgs(Args, FPT, ArgBegin, ArgEnd, CD, IsCopy ? 1 : 0);
+  CGF.EmitCallArgs(Args, FPT, llvm::makeArrayRef(ArgVec), CD, IsCopy ? 1 : 0);
 
   // Insert any ABI-specific implicit constructor arguments.
   unsigned ExtraArgs = addImplicitConstructorArgs(CGF, CD, Ctor_Complete,

@@ -700,8 +700,7 @@ void CXXNameMangler::mangleFloat(const llvm::APFloat &f) {
   assert(numCharacters != 0);
 
   // Allocate a buffer of the right number of characters.
-  SmallVector<char, 20> buffer;
-  buffer.set_size(numCharacters);
+  SmallVector<char, 20> buffer(numCharacters);
 
   // Fill the buffer left-to-right.
   for (unsigned stringIndex = 0; stringIndex != numCharacters; ++stringIndex) {
@@ -2056,9 +2055,23 @@ void CXXNameMangler::mangleType(const FunctionProtoType *T) {
 
   Out << 'E';
 }
+
 void CXXNameMangler::mangleType(const FunctionNoProtoType *T) {
-  llvm_unreachable("Can't mangle K&R function prototypes");
+  // Function types without prototypes can arise when mangling a function type
+  // within an overloadable function in C. We mangle these as the absence of any
+  // parameter types (not even an empty parameter list).
+  Out << 'F';
+
+  FunctionTypeDepthState saved = FunctionTypeDepth.push();
+
+  FunctionTypeDepth.enterResultType();
+  mangleType(T->getReturnType());
+  FunctionTypeDepth.leaveResultType();
+
+  FunctionTypeDepth.pop(saved);
+  Out << 'E';
 }
+
 void CXXNameMangler::mangleBareFunctionType(const FunctionType *T,
                                             bool MangleReturnType) {
   // We should never be mangling something without a prototype.
@@ -2379,6 +2392,10 @@ void CXXNameMangler::mangleType(const ObjCInterfaceType *T) {
 }
 
 void CXXNameMangler::mangleType(const ObjCObjectType *T) {
+  // Treat __kindof as a vendor extended type qualifier.
+  if (T->isKindOfType())
+    Out << "U8__kindof";
+
   if (!T->qual_empty()) {
     // Mangle protocol qualifiers.
     SmallString<64> QualStr;
@@ -2388,10 +2405,18 @@ void CXXNameMangler::mangleType(const ObjCObjectType *T) {
       StringRef name = I->getName();
       QualOS << name.size() << name;
     }
-    QualOS.flush();
     Out << 'U' << QualStr.size() << QualStr;
   }
+
   mangleType(T->getBaseType());
+
+  if (T->isSpecialized()) {
+    // Mangle type arguments as I <type>+ E
+    Out << 'I';
+    for (auto typeArg : T->getTypeArgs())
+      mangleType(typeArg);
+    Out << 'E';
+  }
 }
 
 void CXXNameMangler::mangleType(const BlockPointerType *T) {
@@ -3018,10 +3043,18 @@ recurse:
     case UETT_AlignOf:
       Out << 'a';
       break;
-    case UETT_VecStep:
+    case UETT_VecStep: {
       DiagnosticsEngine &Diags = Context.getDiags();
       unsigned DiagID = Diags.getCustomDiagID(DiagnosticsEngine::Error,
                                      "cannot yet mangle vec_step expression");
+      Diags.Report(DiagID);
+      return;
+    }
+    case UETT_OpenMPRequiredSimdAlign:
+      DiagnosticsEngine &Diags = Context.getDiags();
+      unsigned DiagID = Diags.getCustomDiagID(
+          DiagnosticsEngine::Error,
+          "cannot yet mangle __builtin_omp_required_simd_align expression");
       Diags.Report(DiagID);
       return;
     }

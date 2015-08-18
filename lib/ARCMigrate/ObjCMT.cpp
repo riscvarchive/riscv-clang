@@ -355,8 +355,8 @@ public:
   bool TraverseObjCMessageExpr(ObjCMessageExpr *E) {
     // Do depth first; we want to rewrite the subexpressions first so that if
     // we have to move expressions we will move them already rewritten.
-    for (Stmt::child_range range = E->children(); range; ++range)
-      if (!TraverseStmt(*range))
+    for (Stmt *SubStmt : E->children())
+      if (!TraverseStmt(SubStmt))
         return false;
 
     return WalkUpFromObjCMessageExpr(E);
@@ -1982,7 +1982,6 @@ void ObjCMigrateASTConsumer::HandleTranslationUnit(ASTContext &Ctx) {
     SmallString<512> newText;
     llvm::raw_svector_ostream vecOS(newText);
     buf.write(vecOS);
-    vecOS.flush();
     std::unique_ptr<llvm::MemoryBuffer> memBuf(
         llvm::MemoryBuffer::getMemBufferCopy(
             StringRef(newText.data(), newText.size()), file->getName()));
@@ -2215,7 +2214,6 @@ static std::string applyEditsToTemp(const FileEntry *FE,
   SmallString<512> NewText;
   llvm::raw_svector_ostream OS(NewText);
   Buf->write(OS);
-  OS.flush();
 
   SmallString<64> TempPath;
   int FD;

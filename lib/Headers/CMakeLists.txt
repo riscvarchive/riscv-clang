@@ -22,6 +22,7 @@ set(files
   float.h
   fma4intrin.h
   fmaintrin.h
+  fxsrintrin.h
   htmintrin.h
   htmxlintrin.h
   ia32intrin.h
@@ -58,6 +59,7 @@ set(files
   unwind.h
   vadefs.h
   varargs.h
+  vecintrin.h
   __wmmintrin_aes.h
   wmmintrin.h
   __wmmintrin_pclmul.h

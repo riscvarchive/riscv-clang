@@ -66,6 +66,9 @@ public:
   /// \brief The umbrella header or directory.
   llvm::PointerUnion<const DirectoryEntry *, const FileEntry *> Umbrella;
 
+  /// \brief The module signature.
+  uint64_t Signature;
+
   /// \brief The name of the umbrella entry, as written in the module map.
   std::string UmbrellaAsWritten;
   
@@ -352,6 +355,12 @@ public:
   /// \brief Retrieve the full name of this module, including the path from
   /// its top-level module.
   std::string getFullModuleName() const;
+
+  /// \brief Whether the full name of this module is equal to joining
+  /// \p nameParts with "."s.
+  ///
+  /// This is more efficient than getFullModuleName().
+  bool fullModuleNameIs(ArrayRef<StringRef> nameParts) const;
 
   /// \brief Retrieve the top-level module for this (sub)module, which may
   /// be this module.

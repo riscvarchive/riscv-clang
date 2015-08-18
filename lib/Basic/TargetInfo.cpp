@@ -50,6 +50,8 @@ TargetInfo::TargetInfo(const llvm::Triple &T) : TargetOpts(), Triple(T) {
   LargeArrayAlign = 0;
   MaxAtomicPromoteWidth = MaxAtomicInlineWidth = 0;
   MaxVectorAlign = 0;
+  MaxTLSAlign = 0;
+  SimdDefaultAlign = 0;
   SizeType = UnsignedLong;
   PtrDiffType = SignedLong;
   IntMaxType = SignedLongLong;
@@ -69,7 +71,7 @@ TargetInfo::TargetInfo(const llvm::Triple &T) : TargetOpts(), Triple(T) {
   FloatFormat = &llvm::APFloat::IEEEsingle;
   DoubleFormat = &llvm::APFloat::IEEEdouble;
   LongDoubleFormat = &llvm::APFloat::IEEEdouble;
-  DescriptionString = nullptr;
+  DataLayoutString = nullptr;
   UserLabelPrefix = "_";
   MCountName = "mcount";
   RegParmMax = 0;

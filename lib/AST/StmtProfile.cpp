@@ -69,9 +69,9 @@ namespace {
 
 void StmtProfiler::VisitStmt(const Stmt *S) {
   ID.AddInteger(S->getStmtClass());
-  for (Stmt::const_child_range C = S->children(); C; ++C) {
-    if (*C)
-      Visit(*C);
+  for (const Stmt *SubStmt : S->children()) {
+    if (SubStmt)
+      Visit(SubStmt);
     else
       ID.AddInteger(0);
   }
@@ -306,7 +306,10 @@ void OMPClauseProfiler::VisitOMPScheduleClause(const OMPScheduleClause *C) {
   }
 }
 
-void OMPClauseProfiler::VisitOMPOrderedClause(const OMPOrderedClause *) {}
+void OMPClauseProfiler::VisitOMPOrderedClause(const OMPOrderedClause *C) {
+  if (auto *Num = C->getNumForLoops())
+    Profiler->VisitStmt(Num);
+}
 
 void OMPClauseProfiler::VisitOMPNowaitClause(const OMPNowaitClause *) {}
 
@@ -428,6 +431,9 @@ void OMPClauseProfiler::VisitOMPFlushClause(const OMPFlushClause *C) {
 void OMPClauseProfiler::VisitOMPDependClause(const OMPDependClause *C) {
   VisitOMPClauseList(C);
 }
+void OMPClauseProfiler::VisitOMPDeviceClause(const OMPDeviceClause *C) {
+  Profiler->VisitStmt(C->getDevice());
+}
 }
 
 void
@@ -533,7 +539,20 @@ void StmtProfiler::VisitOMPTargetDirective(const OMPTargetDirective *S) {
   VisitOMPExecutableDirective(S);
 }
 
+void StmtProfiler::VisitOMPTargetDataDirective(const OMPTargetDataDirective *S) {
+  VisitOMPExecutableDirective(S);
+}
+
 void StmtProfiler::VisitOMPTeamsDirective(const OMPTeamsDirective *S) {
+  VisitOMPExecutableDirective(S);
+}
+
+void StmtProfiler::VisitOMPCancellationPointDirective(
+    const OMPCancellationPointDirective *S) {
+  VisitOMPExecutableDirective(S);
+}
+
+void StmtProfiler::VisitOMPCancelDirective(const OMPCancelDirective *S) {
   VisitOMPExecutableDirective(S);
 }
 

@@ -453,6 +453,16 @@ TEST(AllOf, AllOverloadsWork) {
                      hasArgument(3, integerLiteral(equals(4)))))));
 }
 
+TEST(ConstructVariadic, MismatchedTypes_Regression) {
+  EXPECT_TRUE(
+      matches("const int a = 0;",
+              internal::DynTypedMatcher::constructVariadic(
+                  internal::DynTypedMatcher::VO_AnyOf,
+                  ast_type_traits::ASTNodeKind::getFromNodeKind<QualType>(),
+                  {isConstQualified(), arrayType()})
+                  .convertTo<QualType>()));
+}
+
 TEST(DeclarationMatcher, MatchAnyOf) {
   DeclarationMatcher YOrZDerivedFromX =
       recordDecl(anyOf(hasName("Y"), allOf(isDerivedFrom("X"), hasName("Z"))));
@@ -482,6 +492,10 @@ TEST(DeclarationMatcher, MatchAnyOf) {
   EXPECT_TRUE(matches("int F() { return 1 + 2; }", MixedTypes));
   EXPECT_TRUE(matches("int F() { if (true) return 1; }", MixedTypes));
   EXPECT_TRUE(notMatches("int F() { return 1; }", MixedTypes));
+
+  EXPECT_TRUE(
+      matches("void f() try { } catch (int) { } catch (...) { }",
+              catchStmt(anyOf(hasDescendant(varDecl()), isCatchAll()))));
 }
 
 TEST(DeclarationMatcher, MatchHas) {
@@ -1406,6 +1420,13 @@ TEST(Callee, MatchesDeclarations) {
                          CallMethodX));
 }
 
+TEST(ConversionDeclaration, IsExplicit) {
+  EXPECT_TRUE(matches("struct S { explicit operator int(); };",
+                      conversionDecl(isExplicit())));
+  EXPECT_TRUE(notMatches("struct S { operator int(); };",
+                         conversionDecl(isExplicit())));
+}
+
 TEST(Callee, MatchesMemberExpressions) {
   EXPECT_TRUE(matches("class Y { void x() { this->x(); } };",
               callExpr(callee(memberExpr()))));
@@ -1770,6 +1791,15 @@ TEST(Matcher, MatchesAccessSpecDecls) {
   EXPECT_TRUE(notMatches("class C { int i; };", accessSpecDecl()));
 }
 
+TEST(Matcher, MatchesFinal) {
+  EXPECT_TRUE(matches("class X final {};", recordDecl(isFinal())));
+  EXPECT_TRUE(matches("class X { virtual void f() final; };",
+                      methodDecl(isFinal())));
+  EXPECT_TRUE(notMatches("class X {};", recordDecl(isFinal())));
+  EXPECT_TRUE(notMatches("class X { virtual void f(); };",
+                         methodDecl(isFinal())));
+}
+
 TEST(Matcher, MatchesVirtualMethod) {
   EXPECT_TRUE(matches("class X { virtual int f(); };",
       methodDecl(isVirtual(), hasName("::X::f"))));
@@ -1969,6 +1999,36 @@ TEST(ConstructorDeclaration, IsImplicit) {
                       methodDecl(isImplicit(), hasName("operator="))));
 }
 
+TEST(ConstructorDeclaration, IsExplicit) {
+  EXPECT_TRUE(matches("struct S { explicit S(int); };",
+                      constructorDecl(isExplicit())));
+  EXPECT_TRUE(notMatches("struct S { S(int); };",
+                         constructorDecl(isExplicit())));
+}
+
+TEST(ConstructorDeclaration, Kinds) {
+  EXPECT_TRUE(matches("struct S { S(); };",
+                      constructorDecl(isDefaultConstructor())));
+  EXPECT_TRUE(notMatches("struct S { S(); };",
+                         constructorDecl(isCopyConstructor())));
+  EXPECT_TRUE(notMatches("struct S { S(); };",
+                         constructorDecl(isMoveConstructor())));
+
+  EXPECT_TRUE(notMatches("struct S { S(const S&); };",
+                         constructorDecl(isDefaultConstructor())));
+  EXPECT_TRUE(matches("struct S { S(const S&); };",
+                      constructorDecl(isCopyConstructor())));
+  EXPECT_TRUE(notMatches("struct S { S(const S&); };",
+                         constructorDecl(isMoveConstructor())));
+
+  EXPECT_TRUE(notMatches("struct S { S(S&&); };",
+                         constructorDecl(isDefaultConstructor())));
+  EXPECT_TRUE(notMatches("struct S { S(S&&); };",
+                         constructorDecl(isCopyConstructor())));
+  EXPECT_TRUE(matches("struct S { S(S&&); };",
+                      constructorDecl(isMoveConstructor())));
+}
+
 TEST(DestructorDeclaration, MatchesVirtualDestructor) {
   EXPECT_TRUE(matches("class Foo { virtual ~Foo(); };",
                       destructorDecl(ofClass(hasName("Foo")))));
@@ -2033,6 +2093,30 @@ TEST(HasAnyConstructorInitializer, IsWritten) {
       allOf(forField(hasName("bar_")), isWritten())))));
   EXPECT_TRUE(matches(Code, constructorDecl(hasAnyConstructorInitializer(
       allOf(forField(hasName("bar_")), unless(isWritten()))))));
+}
+
+TEST(HasAnyConstructorInitializer, IsBaseInitializer) {
+  static const char Code[] =
+      "struct B {};"
+      "struct D : B {"
+      "  int I;"
+      "  D(int i) : I(i) {}"
+      "};"
+      "struct E : B {"
+      "  E() : B() {}"
+      "};";
+  EXPECT_TRUE(matches(Code, constructorDecl(allOf(
+    hasAnyConstructorInitializer(allOf(isBaseInitializer(), isWritten())),
+    hasName("E")))));
+  EXPECT_TRUE(notMatches(Code, constructorDecl(allOf(
+    hasAnyConstructorInitializer(allOf(isBaseInitializer(), isWritten())),
+    hasName("D")))));
+  EXPECT_TRUE(matches(Code, constructorDecl(allOf(
+    hasAnyConstructorInitializer(allOf(isMemberInitializer(), isWritten())),
+    hasName("D")))));
+  EXPECT_TRUE(notMatches(Code, constructorDecl(allOf(
+    hasAnyConstructorInitializer(allOf(isMemberInitializer(), isWritten())),
+    hasName("E")))));
 }
 
 TEST(Matcher, NewExpression) {
@@ -3321,6 +3405,14 @@ TEST(ExceptionHandling, SimpleCases) {
                       throwExpr()));
   EXPECT_TRUE(matches("void foo() try { throw 5;} catch(int X) { }",
                       throwExpr()));
+  EXPECT_TRUE(matches("void foo() try { throw; } catch(...) { }",
+                      catchStmt(isCatchAll())));
+  EXPECT_TRUE(notMatches("void foo() try { throw; } catch(int) { }",
+                         catchStmt(isCatchAll())));
+  EXPECT_TRUE(matches("void foo() try {} catch(int X) { }",
+                      varDecl(isExceptionVariable())));
+  EXPECT_TRUE(notMatches("void foo() try { int X; } catch (...) { }",
+                         varDecl(isExceptionVariable())));
 }
 
 TEST(HasConditionVariableStatement, DoesNotMatchCondition) {

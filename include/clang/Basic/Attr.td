@@ -241,14 +241,18 @@ def COnly : LangOpt<"CPlusPlus", 1>;
 class TargetArch<list<string> arches> {
   list<string> Arches = arches;
   list<string> OSes;
+  list<string> CXXABIs;
 }
 def TargetARM : TargetArch<["arm", "thumb"]>;
+def TargetMips : TargetArch<["mips", "mipsel"]>;
 def TargetMSP430 : TargetArch<["msp430"]>;
 def TargetX86 : TargetArch<["x86"]>;
 def TargetWindows : TargetArch<["x86", "x86_64", "arm", "thumb"]> {
   let OSes = ["Win32"];
 }
-def TargetMips : TargetArch<["mips", "mipsel"]>;
+def TargetMicrosoftCXXABI : TargetArch<["x86", "x86_64", "arm", "thumb"]> {
+  let CXXABIs = ["Microsoft"];
+}
 
 class Attr {
   // The various ways in which an attribute can be spelled in source
@@ -553,11 +557,31 @@ def CUDAConstant : InheritableAttr {
   let Documentation = [Undocumented];
 }
 
+def CUDACudartBuiltin : IgnoredAttr {
+  let Spellings = [GNU<"cudart_builtin">];
+  let LangOpts = [CUDA];
+}
+
 def CUDADevice : InheritableAttr {
   let Spellings = [GNU<"device">];
   let Subjects = SubjectList<[Function, Var]>;
   let LangOpts = [CUDA];
   let Documentation = [Undocumented];
+}
+
+def CUDADeviceBuiltin : IgnoredAttr {
+  let Spellings = [GNU<"device_builtin">];
+  let LangOpts = [CUDA];
+}
+
+def CUDADeviceBuiltinSurfaceType : IgnoredAttr {
+  let Spellings = [GNU<"device_builtin_surface_type">];
+  let LangOpts = [CUDA];
+}
+
+def CUDADeviceBuiltinTextureType : IgnoredAttr {
+  let Spellings = [GNU<"device_builtin_texture_type">];
+  let LangOpts = [CUDA];
 }
 
 def CUDAGlobal : InheritableAttr {
@@ -867,6 +891,12 @@ def ReturnsTwice : InheritableAttr {
   let Documentation = [Undocumented];
 }
 
+def NoAlias : InheritableAttr {
+  let Spellings = [Declspec<"noalias">];
+  let Subjects = SubjectList<[Function]>;
+  let Documentation = [NoAliasDocs];
+}
+
 def NoCommon : InheritableAttr {
   let Spellings = [GCC<"nocommon">];
   let Subjects = SubjectList<[Var]>;
@@ -976,6 +1006,11 @@ def TypeNullUnspecified : TypeAttr {
   let Documentation = [TypeNullUnspecifiedDocs];
 }
 
+def ObjCKindOf : TypeAttr {
+  let Spellings = [Keyword<"__kindof">];
+  let Documentation = [Undocumented];
+}
+
 def AssumeAligned : InheritableAttr {
   let Spellings = [GCC<"assume_aligned">];
   let Subjects = SubjectList<[ObjCMethod, Function]>;
@@ -998,6 +1033,11 @@ def NoInstrumentFunction : InheritableAttr {
 def NoThrow : InheritableAttr {
   let Spellings = [GCC<"nothrow">, Declspec<"nothrow">];
   let Documentation = [Undocumented];
+}
+
+def NvWeak : IgnoredAttr {
+  let Spellings = [GNU<"nv_weak">];
+  let LangOpts = [CUDA];
 }
 
 def ObjCBridge : InheritableAttr {
@@ -1128,7 +1168,7 @@ def ObjCRuntimeName : Attr {
 def ObjCBoxable : Attr {
   let Spellings = [GNU<"objc_boxable">];
   let Subjects = SubjectList<[Record], ErrorDiag, "ExpectedStructOrUnion">;
-  let Documentation = [Undocumented];
+  let Documentation = [ObjCBoxableDocs];
 }
 
 def OptimizeNone : InheritableAttr {
@@ -1276,9 +1316,8 @@ def Pascal : InheritableAttr {
 def Target : InheritableAttr {
   let Spellings = [GCC<"target">];
   let Args = [StringArgument<"features">];
-  let Subjects =
-      SubjectList<[Function], ErrorDiag, "ExpectedFunctionMethodOrClass">;
-  let Documentation = [Undocumented];
+  let Subjects = SubjectList<[Function], ErrorDiag>;
+  let Documentation = [TargetDocs];
 }
 
 def TransparentUnion : InheritableAttr {
@@ -1810,7 +1849,7 @@ def TypeTagForDatatype : InheritableAttr {
 
 // Microsoft-related attributes
 
-def MSNoVTable : InheritableAttr {
+def MSNoVTable : InheritableAttr, TargetSpecificAttr<TargetMicrosoftCXXABI> {
   let Spellings = [Declspec<"novtable">];
   let Subjects = SubjectList<[CXXRecord]>;
   let Documentation = [MSNoVTableDocs];
@@ -1966,8 +2005,8 @@ def LoopHint : Attr {
                           ["Vectorize", "VectorizeWidth", "Interleave", "InterleaveCount",
                            "Unroll", "UnrollCount"]>,
               EnumArgument<"State", "LoopHintState",
-                           ["default", "enable", "disable", "assume_safety"],
-                           ["Default", "Enable", "Disable", "AssumeSafety"]>,
+                           ["enable", "disable", "numeric", "assume_safety", "full"],
+                           ["Enable", "Disable", "Numeric", "AssumeSafety", "Full"]>,
               ExprArgument<"Value">];
 
   let AdditionalMembers = [{
@@ -2006,13 +2045,12 @@ def LoopHint : Attr {
     std::string ValueName;
     llvm::raw_string_ostream OS(ValueName);
     OS << "(";
-    if (option == VectorizeWidth || option == InterleaveCount ||
-        option == UnrollCount)
+    if (state == Numeric)
       value->printPretty(OS, nullptr, Policy);
-    else if (state == Default)
-      return "";
     else if (state == Enable)
-      OS << (option == Unroll ? "full" : "enable");
+      OS << "enable";
+    else if (state == Full)
+      OS << "full";
     else if (state == AssumeSafety)
       OS << "assume_safety";
     else
@@ -2027,7 +2065,7 @@ def LoopHint : Attr {
     if (SpellingIndex == Pragma_nounroll)
       return "#pragma nounroll";
     else if (SpellingIndex == Pragma_unroll)
-      return "#pragma unroll" + getValueString(Policy);
+      return "#pragma unroll" + (option == UnrollCount ? getValueString(Policy) : "");
 
     assert(SpellingIndex == Pragma_clang_loop && "Unexpected spelling");
     return getOptionName(option) + getValueString(Policy);

@@ -1788,6 +1788,9 @@ OMPClause *OMPClauseReader::readClause() {
   case OMPC_depend:
     C = OMPDependClause::CreateEmpty(Context, Record[Idx++]);
     break;
+  case OMPC_device:
+    C = new (Context) OMPDeviceClause();
+    break;
   }
   Visit(C);
   C->setLocStart(Reader->ReadSourceLocation(Record, Idx));
@@ -1845,7 +1848,10 @@ void OMPClauseReader::VisitOMPScheduleClause(OMPScheduleClause *C) {
   C->setCommaLoc(Reader->ReadSourceLocation(Record, Idx));
 }
 
-void OMPClauseReader::VisitOMPOrderedClause(OMPOrderedClause *) {}
+void OMPClauseReader::VisitOMPOrderedClause(OMPOrderedClause *C) {
+  C->setNumForLoops(Reader->Reader.ReadSubExpr());
+  C->setLParenLoc(Reader->ReadSourceLocation(Record, Idx));
+}
 
 void OMPClauseReader::VisitOMPNowaitClause(OMPNowaitClause *) {}
 
@@ -2065,6 +2071,11 @@ void OMPClauseReader::VisitOMPDependClause(OMPDependClause *C) {
   C->setVarRefs(Vars);
 }
 
+void OMPClauseReader::VisitOMPDeviceClause(OMPDeviceClause *C) {
+  C->setDevice(Reader->Reader.ReadSubExpr());
+  C->setLParenLoc(Reader->ReadSourceLocation(Record, Idx));
+}
+
 //===----------------------------------------------------------------------===//
 // OpenMP Directives.
 //===----------------------------------------------------------------------===//
@@ -2107,6 +2118,14 @@ void ASTStmtReader::VisitOMPLoopDirective(OMPLoopDirective *D) {
   for (unsigned i = 0; i < CollapsedNum; ++i)
     Sub.push_back(Reader.ReadSubExpr());
   D->setCounters(Sub);
+  Sub.clear();
+  for (unsigned i = 0; i < CollapsedNum; ++i)
+    Sub.push_back(Reader.ReadSubExpr());
+  D->setPrivateCounters(Sub);
+  Sub.clear();
+  for (unsigned i = 0; i < CollapsedNum; ++i)
+    Sub.push_back(Reader.ReadSubExpr());
+  D->setInits(Sub);
   Sub.clear();
   for (unsigned i = 0; i < CollapsedNum; ++i)
     Sub.push_back(Reader.ReadSubExpr());
@@ -2242,11 +2261,30 @@ void ASTStmtReader::VisitOMPTargetDirective(OMPTargetDirective *D) {
   VisitOMPExecutableDirective(D);
 }
 
+void ASTStmtReader::VisitOMPTargetDataDirective(OMPTargetDataDirective *D) {
+  VisitStmt(D);
+  ++Idx;
+  VisitOMPExecutableDirective(D);
+}
+
 void ASTStmtReader::VisitOMPTeamsDirective(OMPTeamsDirective *D) {
   VisitStmt(D);
   // The NumClauses field was read in ReadStmtFromStream.
   ++Idx;
   VisitOMPExecutableDirective(D);
+}
+
+void ASTStmtReader::VisitOMPCancellationPointDirective(
+    OMPCancellationPointDirective *D) {
+  VisitStmt(D);
+  VisitOMPExecutableDirective(D);
+  D->setCancelRegion(static_cast<OpenMPDirectiveKind>(Record[Idx++]));
+}
+
+void ASTStmtReader::VisitOMPCancelDirective(OMPCancelDirective *D) {
+  VisitStmt(D);
+  VisitOMPExecutableDirective(D);
+  D->setCancelRegion(static_cast<OpenMPDirectiveKind>(Record[Idx++]));
 }
 
 //===----------------------------------------------------------------------===//
@@ -2847,9 +2885,22 @@ Stmt *ASTReader::ReadStmtFromStream(ModuleFile &F) {
           Context, Record[ASTStmtReader::NumStmtFields], Empty);
       break;
 
+    case STMT_OMP_TARGET_DATA_DIRECTIVE:
+      S = OMPTargetDataDirective::CreateEmpty(
+          Context, Record[ASTStmtReader::NumStmtFields], Empty);
+      break;
+
     case STMT_OMP_TEAMS_DIRECTIVE:
       S = OMPTeamsDirective::CreateEmpty(
           Context, Record[ASTStmtReader::NumStmtFields], Empty);
+      break;
+
+    case STMT_OMP_CANCELLATION_POINT_DIRECTIVE:
+      S = OMPCancellationPointDirective::CreateEmpty(Context, Empty);
+      break;
+
+    case STMT_OMP_CANCEL_DIRECTIVE:
+      S = OMPCancelDirective::CreateEmpty(Context, Empty);
       break;
 
     case EXPR_CXX_OPERATOR_CALL:

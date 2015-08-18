@@ -42,7 +42,7 @@ namespace driver {
   class Command;
   class Compilation;
   class InputInfo;
-  class Job;
+  class JobList;
   class JobAction;
   class SanitizerArgs;
   class ToolChain;
@@ -195,7 +195,7 @@ private:
                            llvm::opt::Arg **FinalPhaseArg = nullptr) const;
 
   // Before executing jobs, sets up response files for commands that need them.
-  void setUpResponseFiles(Compilation &C, Job &J);
+  void setUpResponseFiles(Compilation &C, Command &Cmd);
 
   void generatePrefixedToolNames(const char *Tool, const ToolChain &TC,
                                  SmallVectorImpl<std::string> &Names) const;
@@ -405,12 +405,12 @@ public:
   bool IsUsingLTO(const llvm::opt::ArgList &Args) const;
 
 private:
-  /// \brief Retrieves a ToolChain for a particular target triple.
+  /// \brief Retrieves a ToolChain for a particular \p Target triple.
   ///
   /// Will cache ToolChains for the life of the driver object, and create them
   /// on-demand.
   const ToolChain &getToolChain(const llvm::opt::ArgList &Args,
-                                StringRef DarwinArchName = "") const;
+                                const llvm::Triple &Target) const;
 
   /// @}
 

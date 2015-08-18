@@ -66,9 +66,24 @@
 // CHECK-LD-RT: "-L[[SYSROOT]]/usr/lib/gcc/x86_64-unknown-linux/4.6.0/../../.."
 // CHECK-LD-RT: "-L[[SYSROOT]]/lib"
 // CHECK-LD-RT: "-L[[SYSROOT]]/usr/lib"
-// CHECK-LD-RT: libclang_rt.builtins-x86_64.a" "-lgcc_s"
+// CHECK-LD-RT: libclang_rt.builtins-x86_64.a"
 // CHECK-LD-RT: "-lc"
-// CHECK-LD-RT: libclang_rt.builtins-x86_64.a" "-lgcc_s"
+// CHECK-LD-RT: libclang_rt.builtins-x86_64.a"
+//
+// RUN: %clang -no-canonical-prefixes %s -### -o %t.o 2>&1 \
+// RUN:     --target=arm-linux-androideabi \
+// RUN:     --gcc-toolchain="" \
+// RUN:     --sysroot=%S/Inputs/basic_android_tree/sysroot \
+// RUN:     --rtlib=compiler-rt \
+// RUN:   | FileCheck --check-prefix=CHECK-LD-RT-ANDROID %s
+// CHECK-LD-RT-ANDROID-NOT: warning:
+// CHECK-LD-RT-ANDROID: "{{.*}}ld{{(.exe)?}}" "--sysroot=[[SYSROOT:[^"]+]]"
+// CHECK-LD-RT-ANDROID: "--eh-frame-hdr"
+// CHECK-LD-RT-ANDROID: "-m" "armelf_linux_eabi"
+// CHECK-LD-RT-ANDROID: "-dynamic-linker"
+// CHECK-LD-RT-ANDROID: libclang_rt.builtins-arm-android.a"
+// CHECK-LD-RT-ANDROID: "-lc"
+// CHECK-LD-RT-ANDROID: libclang_rt.builtins-arm-android.a"
 //
 // RUN: %clang -no-canonical-prefixes %s -### -o %t.o 2>&1 \
 // RUN:     --target=arm-linux-androideabi \
@@ -616,6 +631,13 @@
 // CHECK-ARM: "{{.*}}ld{{(.exe)?}}"
 // CHECK-ARM: "-m" "armelf_linux_eabi"
 // CHECK-ARM: "-dynamic-linker" "{{.*}}/lib/ld-linux.so.3"
+//
+// RUN: %clang %s -### -o %t.o 2>&1 \
+// RUN:     --target=arm-linux-gnueabi -mfloat-abi=hard \
+// RUN:   | FileCheck --check-prefix=CHECK-ARM-ABIHF %s
+// CHECK-ARM-ABIHF: "{{.*}}ld{{(.exe)?}}"
+// CHECK-ARM-ABIHF: "-m" "armelf_linux_eabi"
+// CHECK-ARM-ABIHF: "-dynamic-linker" "{{.*}}/lib/ld-linux-armhf.so.3"
 //
 // RUN: %clang %s -### -o %t.o 2>&1 \
 // RUN:     --target=arm-linux-gnueabihf \

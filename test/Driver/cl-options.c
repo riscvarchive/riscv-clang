@@ -1,6 +1,3 @@
-// Don't attempt slash switches on msys bash.
-// REQUIRES: shell-preserves-root
-
 // Note: %s must be preceded by --, otherwise it may be interpreted as a
 // command-line option, e.g. on Mac where %s is commonly under /Users.
 
@@ -84,7 +81,7 @@
 // J: -fno-signed-char
 
 // RUN: %clang_cl /Ofoo -### -- %s 2>&1 | FileCheck -check-prefix=O %s
-// O: -Ofoo
+// O: /Ofoo
 
 // RUN: %clang_cl /Ob0 -### -- %s 2>&1 | FileCheck -check-prefix=Ob0 %s
 // Ob0: -fno-inline
@@ -99,13 +96,24 @@
 // Oi_: -fno-builtin
 
 // RUN: %clang_cl /Os -### -- %s 2>&1 | FileCheck -check-prefix=Os %s
+// Os-NOT: -mdisable-fp-elim
+// Os: -momit-leaf-frame-pointer
 // Os: -Os
 
 // RUN: %clang_cl /Ot -### -- %s 2>&1 | FileCheck -check-prefix=Ot %s
+// Ot-NOT: -mdisable-fp-elim
+// Ot: -momit-leaf-frame-pointer
 // Ot: -O2
 
 // RUN: %clang_cl /Ox -### -- %s 2>&1 | FileCheck -check-prefix=Ox %s
-// Ox: -O3
+// Ox-NOT: -mdisable-fp-elim
+// Ox: -momit-leaf-frame-pointer
+// Ox: -O2
+
+// RUN: %clang_cl /O2sy- -### -- %s 2>&1 | FileCheck -check-prefix=PR24003 %s
+// PR24003: -mdisable-fp-elim
+// PR24003: -momit-leaf-frame-pointer
+// PR24003: -Os
 
 // RUN: %clang_cl /Zs /Oy -- %s 2>&1
 
@@ -352,11 +360,30 @@
 // RUN: %clang_cl /Zc:threadSafeInit /c -### -- %s 2>&1 | FileCheck -check-prefix=ThreadSafeStatics %s
 // ThreadSafeStatics-NOT: "-fno-threadsafe-statics"
 
+// RUN: %clang_cl /Zi /c -### -- %s 2>&1 | FileCheck -check-prefix=Zi %s
+// Zi: "-gline-tables-only"
+// Zi: "-gcodeview"
+
+// RUN: %clang_cl /Z7 /c -### -- %s 2>&1 | FileCheck -check-prefix=Z7 %s
+// Z7: "-gline-tables-only"
+// Z7: "-gcodeview"
+
+// RUN: %clang_cl /Z7 -gdwarf /c -### -- %s 2>&1 | FileCheck -check-prefix=Z7_gdwarf %s
+// Z7_gdwarf: "-gline-tables-only"
+// Z7_gdwarf: "-gcodeview"
+// Z7_gdwarf: "-gdwarf-4"
+
 // RUN: %clang_cl -fmsc-version=1800 -TP -### -- %s 2>&1 | FileCheck -check-prefix=CXX11 %s
 // CXX11: -std=c++11
 
 // RUN: %clang_cl -fmsc-version=1900 -TP -### -- %s 2>&1 | FileCheck -check-prefix=CXX14 %s
 // CXX14: -std=c++14
+
+// RUN: env CL="/Gy" %clang_cl -### -- %s 2>&1 | FileCheck -check-prefix=ENV-CL %s
+// ENV-CL: "-ffunction-sections"
+
+// RUN: env CL="/Gy" _CL_="/Gy- -- %s" %clang_cl -### 2>&1 | FileCheck -check-prefix=ENV-_CL_ %s
+// ENV-_CL_-NOT: "-ffunction-sections"
 
 // Accept "core" clang options.
 // (/Zs is for syntax-only, -Werror makes it fail hard on unknown options)

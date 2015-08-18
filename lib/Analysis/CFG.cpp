@@ -176,8 +176,8 @@ private:
 
 public:
   /// Constructs empty scope linked to previous scope in specified place.
-  LocalScope(BumpVectorContext &ctx, const_iterator P)
-      : ctx(ctx), Vars(ctx, 4), Prev(P) {}
+  LocalScope(BumpVectorContext ctx, const_iterator P)
+      : ctx(std::move(ctx)), Vars(this->ctx, 4), Prev(P) {}
 
   /// Begin of scope in direction of CFG building (backwards).
   const_iterator begin() const { return const_iterator(*this, Vars.size()); }
@@ -270,9 +270,8 @@ reverse_children::reverse_children(Stmt *S) {
   }
 
   // Default case for all other statements.
-  for (Stmt::child_range I = S->children(); I; ++I) {
-    childrenBuf.push_back(*I);
-  }
+  for (Stmt *SubStmt : S->children())
+    childrenBuf.push_back(SubStmt);
 
   // This needs to be done *after* childrenBuf has been populated.
   children = childrenBuf;
@@ -285,7 +284,7 @@ reverse_children::reverse_children(Stmt *S) {
 ///   Example usage:
 ///
 ///     CFGBuilder builder;
-///     CFG* cfg = builder.BuildAST(stmt1);
+///     std::unique_ptr<CFG> cfg = builder.buildCFG(decl, stmt1);
 ///
 ///  CFG construction is done via a recursive walk of an AST.  We actually parse
 ///  the AST in reverse order so that the successor of a basic block is
@@ -995,9 +994,8 @@ std::unique_ptr<CFG> CFGBuilder::buildCFG(const Decl *D, Stmt *Statement) {
 
   // For C++ constructor add initializers to CFG.
   if (const CXXConstructorDecl *CD = dyn_cast_or_null<CXXConstructorDecl>(D)) {
-    for (CXXConstructorDecl::init_const_reverse_iterator I = CD->init_rbegin(),
-        E = CD->init_rend(); I != E; ++I) {
-      B = addInitializer(*I);
+    for (auto *I : llvm::reverse(CD->inits())) {
+      B = addInitializer(I);
       if (badCFG)
         return nullptr;
     }
@@ -1249,13 +1247,11 @@ void CFGBuilder::addImplicitDtorsForDestructor(const CXXDestructorDecl *DD) {
 /// createOrReuseLocalScope - If Scope is NULL create new LocalScope. Either
 /// way return valid LocalScope object.
 LocalScope* CFGBuilder::createOrReuseLocalScope(LocalScope* Scope) {
-  if (!Scope) {
-    llvm::BumpPtrAllocator &alloc = cfg->getAllocator();
-    Scope = alloc.Allocate<LocalScope>();
-    BumpVectorContext ctx(alloc);
-    new (Scope) LocalScope(ctx, ScopePos);
-  }
-  return Scope;
+  if (Scope)
+    return Scope;
+  llvm::BumpPtrAllocator &alloc = cfg->getAllocator();
+  return new (alloc.Allocate<LocalScope>())
+      LocalScope(BumpVectorContext(alloc), ScopePos);
 }
 
 /// addLocalScopeForStmt - Add LocalScope to local scopes tree for statement
@@ -3641,11 +3637,11 @@ CFGBlock *CFGBuilder::VisitChildrenForTemporaryDtors(Stmt *E,
   // bottom-up, this means we visit them in their natural order, which
   // reverses them in the CFG.
   CFGBlock *B = Block;
-  for (Stmt::child_range I = E->children(); I; ++I) {
-    if (Stmt *Child = *I)
+  for (Stmt *Child : E->children())
+    if (Child)
       if (CFGBlock *R = VisitForTemporaryDtors(Child, false, Context))
         B = R;
-  }
+
   return B;
 }
 
@@ -4129,7 +4125,8 @@ static void print_elem(raw_ostream &OS, StmtPrinterHelper &Helper,
     if (const StmtExpr *SE = dyn_cast<StmtExpr>(S)) {
       const CompoundStmt *Sub = SE->getSubStmt();
 
-      if (Sub->children()) {
+      auto Children = Sub->children();
+      if (Children.begin() != Children.end()) {
         OS << "({ ... ; ";
         Helper.handledStmt(*SE->getSubStmt()->body_rbegin(),OS);
         OS << " })\n";

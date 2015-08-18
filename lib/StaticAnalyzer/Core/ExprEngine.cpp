@@ -821,7 +821,10 @@ void ExprEngine::Visit(const Stmt *S, ExplodedNode *Pred,
     case Stmt::OMPOrderedDirectiveClass:
     case Stmt::OMPAtomicDirectiveClass:
     case Stmt::OMPTargetDirectiveClass:
+    case Stmt::OMPTargetDataDirectiveClass:
     case Stmt::OMPTeamsDirectiveClass:
+    case Stmt::OMPCancellationPointDirectiveClass:
+    case Stmt::OMPCancelDirectiveClass:
       llvm_unreachable("Stmt should not be in analyzer evaluation loop");
 
     case Stmt::ObjCSubscriptRefExprClass:
@@ -2003,7 +2006,7 @@ void ExprEngine::VisitMemberExpr(const MemberExpr *M, ExplodedNode *Pred,
 }
 
 namespace {
-class CollectReachableSymbolsCallback : public SymbolVisitor {
+class CollectReachableSymbolsCallback final : public SymbolVisitor {
   InvalidatedSymbols Symbols;
 public:
   CollectReachableSymbolsCallback(ProgramStateRef State) {}

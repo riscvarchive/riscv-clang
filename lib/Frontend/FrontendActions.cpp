@@ -93,7 +93,7 @@ GeneratePCHAction::CreateASTConsumer(CompilerInstance &CI, StringRef InFile) {
   Consumers.push_back(llvm::make_unique<PCHGenerator>(
       CI.getPreprocessor(), OutputFile, nullptr, Sysroot, Buffer));
   Consumers.push_back(
-      CI.getPCHContainerOperations()->CreatePCHContainerGenerator(
+      CI.getPCHContainerWriter().CreatePCHContainerGenerator(
           CI.getDiagnostics(), CI.getHeaderSearchOpts(),
           CI.getPreprocessorOpts(), CI.getTargetOpts(), CI.getLangOpts(),
           InFile, OutputFile, OS, Buffer));
@@ -137,9 +137,11 @@ GenerateModuleAction::CreateASTConsumer(CompilerInstance &CI,
   auto Buffer = std::make_shared<PCHBuffer>();
   std::vector<std::unique_ptr<ASTConsumer>> Consumers;
   Consumers.push_back(llvm::make_unique<PCHGenerator>(
-      CI.getPreprocessor(), OutputFile, Module, Sysroot, Buffer));
+      CI.getPreprocessor(), OutputFile, Module, Sysroot, Buffer,
+      /*AllowASTWithErrors*/false,
+      /*IncludeTimestamps*/+CI.getFrontendOpts().BuildingImplicitModule));
   Consumers.push_back(
-      CI.getPCHContainerOperations()->CreatePCHContainerGenerator(
+      CI.getPCHContainerWriter().CreatePCHContainerGenerator(
           CI.getDiagnostics(), CI.getHeaderSearchOpts(),
           CI.getPreprocessorOpts(), CI.getTargetOpts(), CI.getLangOpts(),
           InFile, OutputFile, OS, Buffer));
@@ -268,8 +270,9 @@ collectModuleHeaderIncludes(const LangOptions &LangOpts, FileManager &FileMgr,
 
 bool GenerateModuleAction::BeginSourceFileAction(CompilerInstance &CI, 
                                                  StringRef Filename) {
-  // Find the module map file.  
-  const FileEntry *ModuleMap = CI.getFileManager().getFile(Filename);
+  // Find the module map file.
+  const FileEntry *ModuleMap =
+      CI.getFileManager().getFile(Filename, /*openFile*/true);
   if (!ModuleMap)  {
     CI.getDiagnostics().Report(diag::err_module_map_not_found)
       << Filename;
@@ -289,6 +292,14 @@ bool GenerateModuleAction::BeginSourceFileAction(CompilerInstance &CI,
     // default. Then it would be fairly trivial to just "compile" a module
     // map with a single module (the common case).
     return false;
+  }
+
+  // Set up embedding for any specified files.
+  for (const auto &F : CI.getFrontendOpts().ModulesEmbedFiles) {
+    if (const auto *FE = CI.getFileManager().getFile(F, /*openFile*/true))
+      CI.getSourceManager().embedFileContentsInModule(FE);
+    else
+      CI.getDiagnostics().Report(diag::err_modules_embed_file_not_found) << F;
   }
 
   // If we're being run from the command-line, the module build stack will not
@@ -415,7 +426,7 @@ void VerifyPCHAction::ExecuteAction() {
   bool Preamble = CI.getPreprocessorOpts().PrecompiledPreambleBytes.first != 0;
   const std::string &Sysroot = CI.getHeaderSearchOpts().Sysroot;
   std::unique_ptr<ASTReader> Reader(new ASTReader(
-      CI.getPreprocessor(), CI.getASTContext(), *CI.getPCHContainerOperations(),
+      CI.getPreprocessor(), CI.getASTContext(), CI.getPCHContainerReader(),
       Sysroot.empty() ? "" : Sysroot.c_str(),
       /*DisableValidation*/ false,
       /*AllowPCHWithCompilerErrors*/ false,
@@ -578,7 +589,7 @@ void DumpModuleInfoAction::ExecuteAction() {
   DumpModuleInfoListener Listener(Out);
   ASTReader::readASTFileControlBlock(
       getCurrentFile(), getCompilerInstance().getFileManager(),
-      *getCompilerInstance().getPCHContainerOperations(), Listener);
+      getCompilerInstance().getPCHContainerReader(), Listener);
 }
 
 //===----------------------------------------------------------------------===//

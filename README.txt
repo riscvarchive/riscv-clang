@@ -20,8 +20,8 @@ the relevant web sites.  Here are some pointers:
 | Information on the LLVM project:  | http://llvm.org/ |
 
 If you have questions or comments about Clang, a great place to discuss them is
-on the Clang development mailing list:  
-http://lists.cs.uiuc.edu/mailman/listinfo/cfe-dev
+on the Clang development mailing list:
+  http://lists.llvm.org/mailman/listinfo/cfe-dev
 
 If you find a bug in Clang, please file it in the LLVM bug tracker:  
 http://llvm.org/bugs/

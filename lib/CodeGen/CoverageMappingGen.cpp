@@ -413,8 +413,8 @@ struct CounterCoverageMappingBuilder
           SourceRegions.emplace_back(Region.getCounter(), NestedLoc, EndLoc);
 
           EndLoc = getPreciseTokenLocEnd(getIncludeOrExpansionLoc(EndLoc));
-          assert(!EndLoc.isInvalid() &&
-                 "File exit was not handled before popRegions");
+          if (EndLoc.isInvalid())
+            llvm::report_fatal_error("File exit not handled before popRegions");
         }
         Region.setEndLoc(EndLoc);
 
@@ -496,12 +496,12 @@ struct CounterCoverageMappingBuilder
 
     llvm::SmallSet<SourceLocation, 8> StartLocs;
     Optional<Counter> ParentCounter;
-    for (auto I = RegionStack.rbegin(), E = RegionStack.rend(); I != E; ++I) {
-      if (!I->hasStartLoc())
+    for (SourceMappingRegion &I : llvm::reverse(RegionStack)) {
+      if (!I.hasStartLoc())
         continue;
-      SourceLocation Loc = I->getStartLoc();
+      SourceLocation Loc = I.getStartLoc();
       if (!isNestedIn(Loc, ParentFile)) {
-        ParentCounter = I->getCounter();
+        ParentCounter = I.getCounter();
         break;
       }
 
@@ -510,11 +510,11 @@ struct CounterCoverageMappingBuilder
         // correct count. We avoid creating redundant regions by stopping once
         // we've seen this region.
         if (StartLocs.insert(Loc).second)
-          SourceRegions.emplace_back(I->getCounter(), Loc,
+          SourceRegions.emplace_back(I.getCounter(), Loc,
                                      getEndOfFileOrMacro(Loc));
         Loc = getIncludeOrExpansionLoc(Loc);
       }
-      I->setStartLoc(getPreciseTokenLocEnd(Loc));
+      I.setStartLoc(getPreciseTokenLocEnd(Loc));
     }
 
     if (ParentCounter) {
@@ -582,10 +582,9 @@ struct CounterCoverageMappingBuilder
   void VisitStmt(const Stmt *S) {
     if (!S->getLocStart().isInvalid())
       extendRegion(S);
-    for (Stmt::const_child_range I = S->children(); I; ++I) {
-      if (*I)
-        this->Visit(*I);
-    }
+    for (const Stmt *Child : S->children())
+      if (Child)
+        this->Visit(Child);
     handleFileExit(getEnd(S));
   }
 
@@ -843,7 +842,6 @@ struct CounterCoverageMappingBuilder
   }
 
   void VisitCXXCatchStmt(const CXXCatchStmt *S) {
-    extendRegion(S);
     propagateCounts(getRegionCounter(S), S->getHandlerBlock());
   }
 
@@ -932,7 +930,8 @@ void CoverageMappingModuleGen::addFunctionMappingRecord(
   if (!FunctionRecordTy) {
     llvm::Type *FunctionRecordTypes[] = {Int8PtrTy, Int32Ty, Int32Ty, Int64Ty};
     FunctionRecordTy =
-        llvm::StructType::get(Ctx, makeArrayRef(FunctionRecordTypes));
+        llvm::StructType::get(Ctx, makeArrayRef(FunctionRecordTypes),
+                              /*isPacked=*/true);
   }
 
   llvm::Constant *FunctionRecordVals[] = {

@@ -1057,6 +1057,7 @@ static bool HasFeature(const Preprocessor &PP, const IdentifierInfo *II) {
       .Case("attribute_availability", true)
       .Case("attribute_availability_with_message", true)
       .Case("attribute_availability_app_extension", true)
+      .Case("attribute_availability_with_version_underscores", true)
       .Case("attribute_cf_returns_not_retained", true)
       .Case("attribute_cf_returns_retained", true)
       .Case("attribute_cf_returns_on_parameters", true)
@@ -1075,7 +1076,7 @@ static bool HasFeature(const Preprocessor &PP, const IdentifierInfo *II) {
       .Case("blocks", LangOpts.Blocks)
       .Case("c_thread_safety_attributes", true)
       .Case("cxx_exceptions", LangOpts.CXXExceptions)
-      .Case("cxx_rtti", LangOpts.RTTI)
+      .Case("cxx_rtti", LangOpts.RTTI && LangOpts.RTTIData)
       .Case("enumerator_attributes", true)
       .Case("nullability", true)
       .Case("memory_sanitizer", LangOpts.Sanitize.has(SanitizerKind::Memory))
@@ -1088,6 +1089,7 @@ static bool HasFeature(const Preprocessor &PP, const IdentifierInfo *II) {
       .Case("objc_default_synthesize_properties", LangOpts.ObjC2)
       .Case("objc_fixed_enum", LangOpts.ObjC2)
       .Case("objc_instancetype", LangOpts.ObjC2)
+      .Case("objc_kindof", LangOpts.ObjC2)
       .Case("objc_modules", LangOpts.ObjC2 && LangOpts.Modules)
       .Case("objc_nonfragile_abi", LangOpts.ObjCRuntime.isNonFragile())
       .Case("objc_property_explicit_atomic",
@@ -1106,6 +1108,8 @@ static bool HasFeature(const Preprocessor &PP, const IdentifierInfo *II) {
       .Case("arc_cf_code_audited", true)
       .Case("objc_bridge_id", true)
       .Case("objc_bridge_id_on_typedefs", true)
+      .Case("objc_generics", LangOpts.ObjC2)
+      .Case("objc_generics_variance", LangOpts.ObjC2)
       // C11 features
       .Case("c_alignas", LangOpts.C11)
       .Case("c_alignof", LangOpts.C11)
@@ -1629,13 +1633,13 @@ void Preprocessor::ExpandBuiltinMacro(Token &Tok) {
       Value = FeatureII->getBuiltinID() != 0;
     } else if (II == Ident__has_attribute)
       Value = hasAttribute(AttrSyntax::GNU, nullptr, FeatureII,
-                           getTargetInfo().getTriple(), getLangOpts());
+                           getTargetInfo(), getLangOpts());
     else if (II == Ident__has_cpp_attribute)
       Value = hasAttribute(AttrSyntax::CXX, ScopeII, FeatureII,
-                           getTargetInfo().getTriple(), getLangOpts());
+                           getTargetInfo(), getLangOpts());
     else if (II == Ident__has_declspec)
       Value = hasAttribute(AttrSyntax::Declspec, nullptr, FeatureII,
-                           getTargetInfo().getTriple(), getLangOpts());
+                           getTargetInfo(), getLangOpts());
     else if (II == Ident__has_extension)
       Value = HasExtension(*this, FeatureII);
     else {

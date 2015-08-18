@@ -7,6 +7,7 @@
 //
 //===----------------------------------------------------------------------===//
 #include "clang/Driver/SanitizerArgs.h"
+#include "Tools.h"
 #include "clang/Basic/Sanitizers.h"
 #include "clang/Driver/Driver.h"
 #include "clang/Driver/DriverDiagnostic.h"
@@ -89,6 +90,8 @@ static bool getDefaultBlacklist(const Driver &D, SanitizerMask Kinds,
     BlacklistFile = "tsan_blacklist.txt";
   else if (Kinds & DataFlow)
     BlacklistFile = "dfsan_abilist.txt";
+  else if (Kinds & CFI)
+    BlacklistFile = "cfi_blacklist.txt";
 
   if (BlacklistFile) {
     clang::SmallString<64> Path(D.ResourceDir);
@@ -175,6 +178,7 @@ void SanitizerArgs::clear() {
   BlacklistFiles.clear();
   CoverageFeatures = 0;
   MsanTrackOrigins = 0;
+  MsanUseAfterDtor = false;
   AsanFieldPadding = 0;
   AsanZeroBaseShadow = false;
   AsanSharedRuntime = false;
@@ -288,8 +292,12 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
   // toolchain. We don't have a good way to check the latter, so we just
   // check if the toolchan supports vptr.
   if (~Supported & Vptr) {
-    if (SanitizerMask KindsToDiagnose =
-            Kinds & ~TrappingKinds & NeedsUbsanCxxRt) {
+    SanitizerMask KindsToDiagnose = Kinds & ~TrappingKinds & NeedsUbsanCxxRt;
+    // The runtime library supports the Microsoft C++ ABI, but only well enough
+    // for CFI. FIXME: Remove this once we support vptr on Windows.
+    if (TC.getTriple().isOSWindows())
+      KindsToDiagnose &= ~CFI;
+    if (KindsToDiagnose) {
       SanitizerSet S;
       S.Mask = KindsToDiagnose;
       D.Diag(diag::err_drv_unsupported_opt_for_target)
@@ -412,6 +420,8 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
         }
       }
     }
+    MsanUseAfterDtor = 
+      Args.hasArg(options::OPT_fsanitize_memory_use_after_dtor);
   }
 
   // Parse -f(no-)?sanitize-coverage flags if coverage is supported by the
@@ -533,8 +543,9 @@ static std::string toString(const clang::SanitizerSet &Sanitizers) {
   return Res;
 }
 
-void SanitizerArgs::addArgs(const llvm::opt::ArgList &Args,
-                            llvm::opt::ArgStringList &CmdArgs) const {
+void SanitizerArgs::addArgs(const ToolChain &TC, const llvm::opt::ArgList &Args,
+                            llvm::opt::ArgStringList &CmdArgs,
+                            types::ID InputType) const {
   if (Sanitizers.empty())
     return;
   CmdArgs.push_back(Args.MakeArgString("-fsanitize=" + toString(Sanitizers)));
@@ -556,6 +567,10 @@ void SanitizerArgs::addArgs(const llvm::opt::ArgList &Args,
   if (MsanTrackOrigins)
     CmdArgs.push_back(Args.MakeArgString("-fsanitize-memory-track-origins=" +
                                          llvm::utostr(MsanTrackOrigins)));
+
+  if (MsanUseAfterDtor)
+    CmdArgs.push_back(Args.MakeArgString("-fsanitize-memory-use-after-dtor"));
+
   if (AsanFieldPadding)
     CmdArgs.push_back(Args.MakeArgString("-fsanitize-address-field-padding=" +
                                          llvm::utostr(AsanFieldPadding)));
@@ -581,6 +596,17 @@ void SanitizerArgs::addArgs(const llvm::opt::ArgList &Args,
   // affect compilation.
   if (Sanitizers.has(Memory) || Sanitizers.has(Address))
     CmdArgs.push_back(Args.MakeArgString("-fno-assume-sane-operator-new"));
+
+  if (TC.getTriple().isOSWindows() && needsUbsanRt()) {
+    // Instruct the code generator to embed linker directives in the object file
+    // that cause the required runtime libraries to be linked.
+    CmdArgs.push_back(Args.MakeArgString(
+        "--dependent-lib=" + tools::getCompilerRT(TC, "ubsan_standalone")));
+    if (types::isCXX(InputType))
+      CmdArgs.push_back(
+          Args.MakeArgString("--dependent-lib=" +
+                             tools::getCompilerRT(TC, "ubsan_standalone_cxx")));
+  }
 }
 
 SanitizerMask parseArgValues(const Driver &D, const llvm::opt::Arg *A,

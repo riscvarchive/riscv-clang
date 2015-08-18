@@ -394,7 +394,9 @@ class Preprocessor : public RefCountedBase<Preprocessor> {
                                    const IdentifierInfo *II) const {
       // FIXME: Find a spare bit on IdentifierInfo and store a
       //        HasModuleMacros flag.
-      if (!II->hasMacroDefinition() || !PP.getLangOpts().Modules ||
+      if (!II->hasMacroDefinition() ||
+          (!PP.getLangOpts().Modules &&
+           !PP.getLangOpts().ModulesLocalVisibility) ||
           !PP.CurSubmoduleState->VisibleModules.getGeneration())
         return nullptr;
 
@@ -782,6 +784,22 @@ public:
   bool isMacroDefined(const IdentifierInfo *II) {
     return II->hasMacroDefinition() &&
            (!getLangOpts().Modules || (bool)getMacroDefinition(II));
+  }
+
+  /// \brief Determine whether II is defined as a macro within the module M,
+  /// if that is a module that we've already preprocessed. Does not check for
+  /// macros imported into M.
+  bool isMacroDefinedInLocalModule(const IdentifierInfo *II, Module *M) {
+    if (!II->hasMacroDefinition())
+      return false;
+    auto I = Submodules.find(M);
+    if (I == Submodules.end())
+      return false;
+    auto J = I->second.Macros.find(II);
+    if (J == I->second.Macros.end())
+      return false;
+    auto *MD = J->second.getLatest();
+    return MD && MD->isDefined();
   }
 
   MacroDefinition getMacroDefinition(const IdentifierInfo *II) {

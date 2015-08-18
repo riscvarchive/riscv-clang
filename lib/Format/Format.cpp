@@ -27,6 +27,7 @@
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/Regex.h"
 #include "llvm/Support/YAMLTraits.h"
 #include <queue>
 #include <string>
@@ -93,9 +94,11 @@ template <> struct ScalarEnumerationTraits<FormatStyle::BraceBreakingStyle> {
   static void enumeration(IO &IO, FormatStyle::BraceBreakingStyle &Value) {
     IO.enumCase(Value, "Attach", FormatStyle::BS_Attach);
     IO.enumCase(Value, "Linux", FormatStyle::BS_Linux);
+    IO.enumCase(Value, "Mozilla", FormatStyle::BS_Mozilla);
     IO.enumCase(Value, "Stroustrup", FormatStyle::BS_Stroustrup);
     IO.enumCase(Value, "Allman", FormatStyle::BS_Allman);
     IO.enumCase(Value, "GNU", FormatStyle::BS_GNU);
+    IO.enumCase(Value, "WebKit", FormatStyle::BS_WebKit);
   }
 };
 
@@ -244,6 +247,8 @@ template <> struct MappingTraits<FormatStyle> {
                    Style.IndentWrappedFunctionNames);
     IO.mapOptional("KeepEmptyLinesAtTheStartOfBlocks",
                    Style.KeepEmptyLinesAtTheStartOfBlocks);
+    IO.mapOptional("MacroBlockBegin", Style.MacroBlockBegin);
+    IO.mapOptional("MacroBlockEnd", Style.MacroBlockEnd);
     IO.mapOptional("MaxEmptyLinesToKeep", Style.MaxEmptyLinesToKeep);
     IO.mapOptional("NamespaceIndentation", Style.NamespaceIndentation);
     IO.mapOptional("ObjCBlockIndentWidth", Style.ObjCBlockIndentWidth);
@@ -468,6 +473,8 @@ FormatStyle getChromiumStyle(FormatStyle::LanguageKind Language) {
     ChromiumStyle.BinPackParameters = false;
     ChromiumStyle.DerivePointerAlignment = false;
   }
+  ChromiumStyle.MacroBlockBegin = "^IPC_BEGIN_MESSAGE_MAP$";
+  ChromiumStyle.MacroBlockBegin = "^IPC_END_MESSAGE_MAP$";
   return ChromiumStyle;
 }
 
@@ -478,6 +485,7 @@ FormatStyle getMozillaStyle() {
   MozillaStyle.AlwaysBreakAfterDefinitionReturnType =
       FormatStyle::DRTBS_TopLevel;
   MozillaStyle.AlwaysBreakTemplateDeclarations = true;
+  MozillaStyle.BreakBeforeBraces = FormatStyle::BS_Mozilla;
   MozillaStyle.BreakConstructorInitializersBeforeComma = true;
   MozillaStyle.ConstructorInitializerIndentWidth = 2;
   MozillaStyle.ContinuationIndentWidth = 2;
@@ -497,7 +505,7 @@ FormatStyle getWebKitStyle() {
   Style.AlignOperands = false;
   Style.AlignTrailingComments = false;
   Style.BreakBeforeBinaryOperators = FormatStyle::BOS_All;
-  Style.BreakBeforeBraces = FormatStyle::BS_Stroustrup;
+  Style.BreakBeforeBraces = FormatStyle::BS_WebKit;
   Style.BreakConstructorInitializersBeforeComma = true;
   Style.Cpp11BracedListStyle = false;
   Style.ColumnLimit = 0;
@@ -620,7 +628,9 @@ public:
         LessStashed(false), Column(0), TrailingWhitespace(0),
         SourceMgr(SourceMgr), ID(ID), Style(Style),
         IdentTable(getFormattingLangOpts(Style)), Keywords(IdentTable),
-        Encoding(Encoding), FirstInLineIndex(0), FormattingDisabled(false) {
+        Encoding(Encoding), FirstInLineIndex(0), FormattingDisabled(false),
+        MacroBlockBeginRegex(Style.MacroBlockBegin),
+        MacroBlockEndRegex(Style.MacroBlockEnd) {
     Lex.reset(new Lexer(ID, SourceMgr.getBuffer(ID), SourceMgr,
                         getFormattingLangOpts(Style)));
     Lex->SetKeepWhitespaceMode(true);
@@ -783,11 +793,16 @@ private:
     unsigned TokenCount = 0;
     for (auto I = Tokens.rbegin() + 1, E = Tokens.rend(); I != E; ++I) {
       ++TokenCount;
-      if (I[0]->isOneOf(tok::slash, tok::slashequal) && I + 1 != E &&
-          (I[1]->isOneOf(tok::l_paren, tok::semi, tok::l_brace, tok::r_brace,
-                         tok::exclaim, tok::l_square, tok::colon, tok::comma,
-                         tok::question, tok::kw_return) ||
-           I[1]->isBinaryOperator())) {
+      auto Prev = I + 1;
+      while (Prev != E && Prev[0]->is(tok::comment))
+        ++Prev;
+      if (I[0]->isOneOf(tok::slash, tok::slashequal) &&
+          (Prev == E ||
+           ((Prev[0]->isOneOf(tok::l_paren, tok::semi, tok::l_brace,
+                              tok::r_brace, tok::exclaim, tok::l_square,
+                              tok::colon, tok::comma, tok::question,
+                              tok::kw_return) ||
+             Prev[0]->isBinaryOperator())))) {
         unsigned LastColumn = Tokens.back()->OriginalColumn;
         SourceLocation Loc = Tokens.back()->Tok.getLocation();
         if (MightEndWithEscapedSlash) {
@@ -803,6 +818,8 @@ private:
         Tokens.resize(Tokens.size() - TokenCount);
         Tokens.back()->Tok.setKind(tok::unknown);
         Tokens.back()->Type = TT_RegexLiteral;
+        // Treat regex literals like other string_literals.
+        Tokens.back()->Tok.setKind(tok::string_literal);
         Tokens.back()->ColumnWidth += LastColumn - I[0]->OriginalColumn;
         return true;
       }
@@ -837,7 +854,7 @@ private:
         EndBacktick->OriginalColumn + EndBacktick->ColumnWidth;
     for (auto I = Tokens.rbegin() + 1, E = Tokens.rend(); I != E; I++) {
       ++TokenCount;
-      if (I[0]->NewlinesBefore > 0 || I[0]->IsMultiline)
+      if (I[0]->IsMultiline)
         IsMultiline = true;
 
       // If there was a preceding template string, this must be the start of a
@@ -853,9 +870,10 @@ private:
           EndColumnInFirstLine = I[0]->OriginalColumn + I[0]->ColumnWidth;
         // If the token has newlines, the token before it (if it exists) is the
         // rhs end of the previous line.
-        if (I[0]->NewlinesBefore > 0 && (I + 1 != E))
+        if (I[0]->NewlinesBefore > 0 && (I + 1 != E)) {
           EndColumnInFirstLine = I[1]->OriginalColumn + I[1]->ColumnWidth;
-
+          IsMultiline = true;
+        }
         continue;
       }
 
@@ -888,7 +906,8 @@ private:
         //     until here`;
         Tokens.back()->ColumnWidth =
             EndColumnInFirstLine - Tokens.back()->OriginalColumn;
-        Tokens.back()->LastLineColumnWidth = EndOriginalColumn;
+        // +1 for the ` itself.
+        Tokens.back()->LastLineColumnWidth = EndOriginalColumn + 1;
         Tokens.back()->IsMultiline = true;
       } else {
         // Token simply spans from start to end, +1 for the ` itself.
@@ -1080,7 +1099,6 @@ private:
           break;
         default:
           FormatTok->Type = TT_ImplicitStringLiteral;
-          ++Column;
           break;
         }
       }
@@ -1160,12 +1178,21 @@ private:
       Column = FormatTok->LastLineColumnWidth;
     }
 
-    if (!(Tokens.size() > 0 && Tokens.back()->Tok.getIdentifierInfo() &&
-          Tokens.back()->Tok.getIdentifierInfo()->getPPKeywordID() ==
-              tok::pp_define) &&
-        std::find(ForEachMacros.begin(), ForEachMacros.end(),
-                  FormatTok->Tok.getIdentifierInfo()) != ForEachMacros.end())
-      FormatTok->Type = TT_ForEachMacro;
+    if (Style.Language == FormatStyle::LK_Cpp) {
+      if (!(Tokens.size() > 0 && Tokens.back()->Tok.getIdentifierInfo() &&
+            Tokens.back()->Tok.getIdentifierInfo()->getPPKeywordID() ==
+                tok::pp_define) &&
+          std::find(ForEachMacros.begin(), ForEachMacros.end(),
+                    FormatTok->Tok.getIdentifierInfo()) != ForEachMacros.end()) {
+        FormatTok->Type = TT_ForEachMacro;
+      } else if (FormatTok->is(tok::identifier)) {
+        if (MacroBlockBeginRegex.match(Text)) {
+          FormatTok->Type = TT_MacroBlockBegin;
+        } else if (MacroBlockEndRegex.match(Text)) {
+          FormatTok->Type = TT_MacroBlockEnd;
+        }
+      }
+    }
 
     return FormatTok;
   }
@@ -1189,6 +1216,9 @@ private:
   SmallVector<IdentifierInfo *, 8> ForEachMacros;
 
   bool FormattingDisabled;
+
+  llvm::Regex MacroBlockBeginRegex;
+  llvm::Regex MacroBlockEndRegex;
 
   void readRawToken(FormatToken &Tok) {
     Lex->LexFromRawLexer(Tok.Tok);
@@ -1225,6 +1255,7 @@ private:
                         getFormattingLangOpts(Style), Buffer.begin(),
                         Buffer.begin() + Offset, Buffer.end()));
     Lex->SetKeepWhitespaceMode(true);
+    TrailingWhitespace = 0;
   }
 };
 
@@ -1455,11 +1486,46 @@ private:
     return Text.count('\r') * 2 > Text.count('\n');
   }
 
+  bool
+  hasCpp03IncompatibleFormat(const SmallVectorImpl<AnnotatedLine *> &Lines) {
+    for (const AnnotatedLine* Line : Lines) {
+      if (hasCpp03IncompatibleFormat(Line->Children))
+        return true;
+      for (FormatToken *Tok = Line->First->Next; Tok; Tok = Tok->Next) {
+        if (Tok->WhitespaceRange.getBegin() == Tok->WhitespaceRange.getEnd()) {
+          if (Tok->is(tok::coloncolon) && Tok->Previous->is(TT_TemplateOpener))
+            return true;
+          if (Tok->is(TT_TemplateCloser) &&
+              Tok->Previous->is(TT_TemplateCloser))
+            return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  int countVariableAlignments(const SmallVectorImpl<AnnotatedLine *> &Lines) {
+    int AlignmentDiff = 0;
+    for (const AnnotatedLine* Line : Lines) {
+      AlignmentDiff += countVariableAlignments(Line->Children);
+      for (FormatToken *Tok = Line->First; Tok && Tok->Next; Tok = Tok->Next) {
+        if (!Tok->is(TT_PointerOrReference))
+          continue;
+        bool SpaceBefore =
+            Tok->WhitespaceRange.getBegin() != Tok->WhitespaceRange.getEnd();
+        bool SpaceAfter = Tok->Next->WhitespaceRange.getBegin() !=
+                          Tok->Next->WhitespaceRange.getEnd();
+        if (SpaceBefore && !SpaceAfter)
+          ++AlignmentDiff;
+        if (!SpaceBefore && SpaceAfter)
+          --AlignmentDiff;
+      }
+    }
+    return AlignmentDiff;
+  }
+
   void
   deriveLocalStyle(const SmallVectorImpl<AnnotatedLine *> &AnnotatedLines) {
-    unsigned CountBoundToVariable = 0;
-    unsigned CountBoundToType = 0;
-    bool HasCpp03IncompatibleFormat = false;
     bool HasBinPackedFunction = false;
     bool HasOnePerLineFunction = false;
     for (unsigned i = 0, e = AnnotatedLines.size(); i != e; ++i) {
@@ -1467,25 +1533,6 @@ private:
         continue;
       FormatToken *Tok = AnnotatedLines[i]->First->Next;
       while (Tok->Next) {
-        if (Tok->is(TT_PointerOrReference)) {
-          bool SpacesBefore =
-              Tok->WhitespaceRange.getBegin() != Tok->WhitespaceRange.getEnd();
-          bool SpacesAfter = Tok->Next->WhitespaceRange.getBegin() !=
-                             Tok->Next->WhitespaceRange.getEnd();
-          if (SpacesBefore && !SpacesAfter)
-            ++CountBoundToVariable;
-          else if (!SpacesBefore && SpacesAfter)
-            ++CountBoundToType;
-        }
-
-        if (Tok->WhitespaceRange.getBegin() == Tok->WhitespaceRange.getEnd()) {
-          if (Tok->is(tok::coloncolon) && Tok->Previous->is(TT_TemplateOpener))
-            HasCpp03IncompatibleFormat = true;
-          if (Tok->is(TT_TemplateCloser) &&
-              Tok->Previous->is(TT_TemplateCloser))
-            HasCpp03IncompatibleFormat = true;
-        }
-
         if (Tok->PackingKind == PPK_BinPacked)
           HasBinPackedFunction = true;
         if (Tok->PackingKind == PPK_OnePerLine)
@@ -1494,16 +1541,14 @@ private:
         Tok = Tok->Next;
       }
     }
-    if (Style.DerivePointerAlignment) {
-      if (CountBoundToType > CountBoundToVariable)
-        Style.PointerAlignment = FormatStyle::PAS_Left;
-      else if (CountBoundToType < CountBoundToVariable)
-        Style.PointerAlignment = FormatStyle::PAS_Right;
-    }
-    if (Style.Standard == FormatStyle::LS_Auto) {
-      Style.Standard = HasCpp03IncompatibleFormat ? FormatStyle::LS_Cpp11
-                                                  : FormatStyle::LS_Cpp03;
-    }
+    if (Style.DerivePointerAlignment)
+      Style.PointerAlignment = countVariableAlignments(AnnotatedLines) <= 0
+                                   ? FormatStyle::PAS_Left
+                                   : FormatStyle::PAS_Right;
+    if (Style.Standard == FormatStyle::LS_Auto)
+      Style.Standard = hasCpp03IncompatibleFormat(AnnotatedLines)
+                           ? FormatStyle::LS_Cpp11
+                           : FormatStyle::LS_Cpp03;
     BinPackInconclusiveFunctions =
         HasBinPackedFunction || !HasOnePerLineFunction;
   }

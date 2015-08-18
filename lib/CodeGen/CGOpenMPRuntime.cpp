@@ -45,14 +45,14 @@ public:
 
   CGOpenMPRegionInfo(const CapturedStmt &CS,
                      const CGOpenMPRegionKind RegionKind,
-                     const RegionCodeGenTy &CodeGen)
+                     const RegionCodeGenTy &CodeGen, OpenMPDirectiveKind Kind)
       : CGCapturedStmtInfo(CS, CR_OpenMP), RegionKind(RegionKind),
-        CodeGen(CodeGen) {}
+        CodeGen(CodeGen), Kind(Kind) {}
 
   CGOpenMPRegionInfo(const CGOpenMPRegionKind RegionKind,
-                     const RegionCodeGenTy &CodeGen)
-      : CGCapturedStmtInfo(CR_OpenMP), RegionKind(RegionKind),
-        CodeGen(CodeGen) {}
+                     const RegionCodeGenTy &CodeGen, OpenMPDirectiveKind Kind)
+      : CGCapturedStmtInfo(CR_OpenMP), RegionKind(RegionKind), CodeGen(CodeGen),
+        Kind(Kind) {}
 
   /// \brief Get a variable or parameter for storing global thread id
   /// inside OpenMP construct.
@@ -67,6 +67,8 @@ public:
 
   CGOpenMPRegionKind getRegionKind() const { return RegionKind; }
 
+  OpenMPDirectiveKind getDirectiveKind() const { return Kind; }
+
   static bool classof(const CGCapturedStmtInfo *Info) {
     return Info->getKind() == CR_OpenMP;
   }
@@ -74,14 +76,16 @@ public:
 protected:
   CGOpenMPRegionKind RegionKind;
   const RegionCodeGenTy &CodeGen;
+  OpenMPDirectiveKind Kind;
 };
 
 /// \brief API for captured statement code generation in OpenMP constructs.
 class CGOpenMPOutlinedRegionInfo : public CGOpenMPRegionInfo {
 public:
   CGOpenMPOutlinedRegionInfo(const CapturedStmt &CS, const VarDecl *ThreadIDVar,
-                             const RegionCodeGenTy &CodeGen)
-      : CGOpenMPRegionInfo(CS, ParallelOutlinedRegion, CodeGen),
+                             const RegionCodeGenTy &CodeGen,
+                             OpenMPDirectiveKind Kind)
+      : CGOpenMPRegionInfo(CS, ParallelOutlinedRegion, CodeGen, Kind),
         ThreadIDVar(ThreadIDVar) {
     assert(ThreadIDVar != nullptr && "No ThreadID in OpenMP region.");
   }
@@ -109,8 +113,9 @@ class CGOpenMPTaskOutlinedRegionInfo : public CGOpenMPRegionInfo {
 public:
   CGOpenMPTaskOutlinedRegionInfo(const CapturedStmt &CS,
                                  const VarDecl *ThreadIDVar,
-                                 const RegionCodeGenTy &CodeGen)
-      : CGOpenMPRegionInfo(CS, TaskOutlinedRegion, CodeGen),
+                                 const RegionCodeGenTy &CodeGen,
+                                 OpenMPDirectiveKind Kind)
+      : CGOpenMPRegionInfo(CS, TaskOutlinedRegion, CodeGen, Kind),
         ThreadIDVar(ThreadIDVar) {
     assert(ThreadIDVar != nullptr && "No ThreadID in OpenMP region.");
   }
@@ -141,8 +146,9 @@ private:
 class CGOpenMPInlinedRegionInfo : public CGOpenMPRegionInfo {
 public:
   CGOpenMPInlinedRegionInfo(CodeGenFunction::CGCapturedStmtInfo *OldCSI,
-                            const RegionCodeGenTy &CodeGen)
-      : CGOpenMPRegionInfo(InlinedRegion, CodeGen), OldCSI(OldCSI),
+                            const RegionCodeGenTy &CodeGen,
+                            OpenMPDirectiveKind Kind)
+      : CGOpenMPRegionInfo(InlinedRegion, CodeGen, Kind), OldCSI(OldCSI),
         OuterRegionInfo(dyn_cast_or_null<CGOpenMPRegionInfo>(OldCSI)) {}
   // \brief Retrieve the value of the context parameter.
   llvm::Value *getContextValue() const override {
@@ -207,11 +213,12 @@ public:
   /// \param CodeGen Code generation sequence for combined directives. Includes
   /// a list of functions used for code generation of implicitly inlined
   /// regions.
-  InlinedOpenMPRegionRAII(CodeGenFunction &CGF, const RegionCodeGenTy &CodeGen)
+  InlinedOpenMPRegionRAII(CodeGenFunction &CGF, const RegionCodeGenTy &CodeGen,
+                          OpenMPDirectiveKind Kind)
       : CGF(CGF) {
     // Start emission for the construct.
     CGF.CapturedStmtInfo =
-        new CGOpenMPInlinedRegionInfo(CGF.CapturedStmtInfo, CodeGen);
+        new CGOpenMPInlinedRegionInfo(CGF.CapturedStmtInfo, CodeGen, Kind);
   }
   ~InlinedOpenMPRegionRAII() {
     // Restore original CapturedStmtInfo only if we're done with code emission.
@@ -273,28 +280,27 @@ void CGOpenMPRuntime::clear() {
   InternalVars.clear();
 }
 
-llvm::Value *
-CGOpenMPRuntime::emitParallelOutlinedFunction(const OMPExecutableDirective &D,
-                                              const VarDecl *ThreadIDVar,
-                                              const RegionCodeGenTy &CodeGen) {
+llvm::Value *CGOpenMPRuntime::emitParallelOutlinedFunction(
+    const OMPExecutableDirective &D, const VarDecl *ThreadIDVar,
+    OpenMPDirectiveKind InnermostKind, const RegionCodeGenTy &CodeGen) {
   assert(ThreadIDVar->getType()->isPointerType() &&
          "thread id variable must be of type kmp_int32 *");
   const CapturedStmt *CS = cast<CapturedStmt>(D.getAssociatedStmt());
   CodeGenFunction CGF(CGM, true);
-  CGOpenMPOutlinedRegionInfo CGInfo(*CS, ThreadIDVar, CodeGen);
+  CGOpenMPOutlinedRegionInfo CGInfo(*CS, ThreadIDVar, CodeGen, InnermostKind);
   CodeGenFunction::CGCapturedStmtRAII CapInfoRAII(CGF, &CGInfo);
   return CGF.GenerateCapturedStmtFunction(*CS);
 }
 
-llvm::Value *
-CGOpenMPRuntime::emitTaskOutlinedFunction(const OMPExecutableDirective &D,
-                                          const VarDecl *ThreadIDVar,
-                                          const RegionCodeGenTy &CodeGen) {
+llvm::Value *CGOpenMPRuntime::emitTaskOutlinedFunction(
+    const OMPExecutableDirective &D, const VarDecl *ThreadIDVar,
+    OpenMPDirectiveKind InnermostKind, const RegionCodeGenTy &CodeGen) {
   assert(!ThreadIDVar->getType()->isPointerType() &&
          "thread id variable must be of type kmp_int32 for tasks");
   auto *CS = cast<CapturedStmt>(D.getAssociatedStmt());
   CodeGenFunction CGF(CGM, true);
-  CGOpenMPTaskOutlinedRegionInfo CGInfo(*CS, ThreadIDVar, CodeGen);
+  CGOpenMPTaskOutlinedRegionInfo CGInfo(*CS, ThreadIDVar, CodeGen,
+                                        InnermostKind);
   CodeGenFunction::CGCapturedStmtRAII CapInfoRAII(CGF, &CGInfo);
   return CGF.GenerateCapturedStmtFunction(*CS);
 }
@@ -528,6 +534,14 @@ CGOpenMPRuntime::createRuntimeFunction(OpenMPRTLFunction Function) {
     llvm::FunctionType *FnTy =
         llvm::FunctionType::get(CGM.Int32Ty, TypeParams, /*isVarArg*/ false);
     RTLFn = CGM.CreateRuntimeFunction(FnTy, /*Name*/ "__kmpc_cancel_barrier");
+    break;
+  }
+  case OMPRTL__kmpc_barrier: {
+    // Build void __kmpc_barrier(ident_t *loc, kmp_int32 global_tid);
+    llvm::Type *TypeParams[] = {getIdentTyPointerTy(), CGM.Int32Ty};
+    llvm::FunctionType *FnTy =
+        llvm::FunctionType::get(CGM.VoidTy, TypeParams, /*isVarArg*/ false);
+    RTLFn = CGM.CreateRuntimeFunction(FnTy, /*Name*/ "__kmpc_barrier");
     break;
   }
   case OMPRTL__kmpc_for_static_fini: {
@@ -806,6 +820,24 @@ CGOpenMPRuntime::createRuntimeFunction(OpenMPRTLFunction Function) {
     RTLFn = CGM.CreateRuntimeFunction(FnTy, /*Name=*/"__kmpc_omp_wait_deps");
     break;
   }
+  case OMPRTL__kmpc_cancellationpoint: {
+    // Build kmp_int32 __kmpc_cancellationpoint(ident_t *loc, kmp_int32
+    // global_tid, kmp_int32 cncl_kind)
+    llvm::Type *TypeParams[] = {getIdentTyPointerTy(), CGM.Int32Ty, CGM.IntTy};
+    llvm::FunctionType *FnTy =
+        llvm::FunctionType::get(CGM.Int32Ty, TypeParams, /*isVarArg*/ false);
+    RTLFn = CGM.CreateRuntimeFunction(FnTy, "__kmpc_cancellationpoint");
+    break;
+  }
+  case OMPRTL__kmpc_cancel: {
+    // Build kmp_int32 __kmpc_cancel(ident_t *loc, kmp_int32 global_tid,
+    // kmp_int32 cncl_kind)
+    llvm::Type *TypeParams[] = {getIdentTyPointerTy(), CGM.Int32Ty, CGM.IntTy};
+    llvm::FunctionType *FnTy =
+        llvm::FunctionType::get(CGM.Int32Ty, TypeParams, /*isVarArg*/ false);
+    RTLFn = CGM.CreateRuntimeFunction(FnTy, "__kmpc_cancel");
+    break;
+  }
   }
   return RTLFn;
 }
@@ -900,6 +932,8 @@ llvm::Constant *CGOpenMPRuntime::createDispatchNextFunction(unsigned IVSize,
 
 llvm::Constant *
 CGOpenMPRuntime::getOrCreateThreadPrivateCache(const VarDecl *VD) {
+  assert(!CGM.getLangOpts().OpenMPUseTLS ||
+         !CGM.getContext().getTargetInfo().isTLSSupported());
   // Lookup the entry, lazily creating it if necessary.
   return getOrCreateInternalVariable(CGM.Int8PtrPtrTy,
                                      Twine(CGM.getMangledName(VD)) + ".cache.");
@@ -909,6 +943,10 @@ llvm::Value *CGOpenMPRuntime::getAddrOfThreadPrivate(CodeGenFunction &CGF,
                                                      const VarDecl *VD,
                                                      llvm::Value *VDAddr,
                                                      SourceLocation Loc) {
+  if (CGM.getLangOpts().OpenMPUseTLS &&
+      CGM.getContext().getTargetInfo().isTLSSupported())
+    return VDAddr;
+
   auto VarTy = VDAddr->getType()->getPointerElementType();
   llvm::Value *Args[] = {emitUpdateLocation(CGF, Loc), getThreadID(CGF, Loc),
                          CGF.Builder.CreatePointerCast(VDAddr, CGM.Int8PtrTy),
@@ -938,6 +976,10 @@ void CGOpenMPRuntime::emitThreadPrivateVarInit(
 llvm::Function *CGOpenMPRuntime::emitThreadPrivateVarDefinition(
     const VarDecl *VD, llvm::Value *VDAddr, SourceLocation Loc,
     bool PerformInit, CodeGenFunction *CGF) {
+  if (CGM.getLangOpts().OpenMPUseTLS &&
+      CGM.getContext().getTargetInfo().isTLSSupported())
+    return nullptr;
+
   VD = VD->getDefinition(CGM.getContext());
   if (VD && ThreadPrivateWithDefinition.count(VD) == 0) {
     ThreadPrivateWithDefinition.insert(VD);
@@ -1237,23 +1279,24 @@ void CGOpenMPRuntime::emitCriticalRegion(CodeGenFunction &CGF,
     CGF.EHStack.pushCleanup<CallEndCleanup<std::extent<decltype(Args)>::value>>(
         NormalAndEHCleanup, createRuntimeFunction(OMPRTL__kmpc_end_critical),
         llvm::makeArrayRef(Args));
-    emitInlinedDirective(CGF, CriticalOpGen);
+    emitInlinedDirective(CGF, OMPD_critical, CriticalOpGen);
   }
 }
 
 static void emitIfStmt(CodeGenFunction &CGF, llvm::Value *IfCond,
+                       OpenMPDirectiveKind Kind, SourceLocation Loc,
                        const RegionCodeGenTy &BodyOpGen) {
   llvm::Value *CallBool = CGF.EmitScalarConversion(
       IfCond,
       CGF.getContext().getIntTypeForBitwidth(/*DestWidth=*/32, /*Signed=*/true),
-      CGF.getContext().BoolTy);
+      CGF.getContext().BoolTy, Loc);
 
   auto *ThenBlock = CGF.createBasicBlock("omp_if.then");
   auto *ContBlock = CGF.createBasicBlock("omp_if.end");
   // Generate the branch (If-stmt)
   CGF.Builder.CreateCondBr(CallBool, ThenBlock, ContBlock);
   CGF.EmitBlock(ThenBlock);
-  CGF.CGM.getOpenMPRuntime().emitInlinedDirective(CGF, BodyOpGen);
+  CGF.CGM.getOpenMPRuntime().emitInlinedDirective(CGF, Kind, BodyOpGen);
   // Emit the rest of bblocks/branches
   CGF.EmitBranch(ContBlock);
   CGF.EmitBlock(ContBlock, true);
@@ -1272,13 +1315,14 @@ void CGOpenMPRuntime::emitMasterRegion(CodeGenFunction &CGF,
       CGF.EmitRuntimeCall(createRuntimeFunction(OMPRTL__kmpc_master), Args);
   typedef CallEndCleanup<std::extent<decltype(Args)>::value>
       MasterCallEndCleanup;
-  emitIfStmt(CGF, IsMaster, [&](CodeGenFunction &CGF) -> void {
-    CodeGenFunction::RunCleanupsScope Scope(CGF);
-    CGF.EHStack.pushCleanup<MasterCallEndCleanup>(
-        NormalAndEHCleanup, createRuntimeFunction(OMPRTL__kmpc_end_master),
-        llvm::makeArrayRef(Args));
-    MasterOpGen(CGF);
-  });
+  emitIfStmt(
+      CGF, IsMaster, OMPD_master, Loc, [&](CodeGenFunction &CGF) -> void {
+        CodeGenFunction::RunCleanupsScope Scope(CGF);
+        CGF.EHStack.pushCleanup<MasterCallEndCleanup>(
+            NormalAndEHCleanup, createRuntimeFunction(OMPRTL__kmpc_end_master),
+            llvm::makeArrayRef(Args));
+        MasterOpGen(CGF);
+      });
 }
 
 void CGOpenMPRuntime::emitTaskyieldCall(CodeGenFunction &CGF,
@@ -1305,7 +1349,7 @@ void CGOpenMPRuntime::emitTaskgroupRegion(CodeGenFunction &CGF,
     CGF.EHStack.pushCleanup<CallEndCleanup<std::extent<decltype(Args)>::value>>(
         NormalAndEHCleanup, createRuntimeFunction(OMPRTL__kmpc_end_taskgroup),
         llvm::makeArrayRef(Args));
-    emitInlinedDirective(CGF, TaskgroupOpGen);
+    emitInlinedDirective(CGF, OMPD_taskgroup, TaskgroupOpGen);
   }
 }
 
@@ -1401,18 +1445,19 @@ void CGOpenMPRuntime::emitSingleRegion(CodeGenFunction &CGF,
       CGF.EmitRuntimeCall(createRuntimeFunction(OMPRTL__kmpc_single), Args);
   typedef CallEndCleanup<std::extent<decltype(Args)>::value>
       SingleCallEndCleanup;
-  emitIfStmt(CGF, IsSingle, [&](CodeGenFunction &CGF) -> void {
-    CodeGenFunction::RunCleanupsScope Scope(CGF);
-    CGF.EHStack.pushCleanup<SingleCallEndCleanup>(
-        NormalAndEHCleanup, createRuntimeFunction(OMPRTL__kmpc_end_single),
-        llvm::makeArrayRef(Args));
-    SingleOpGen(CGF);
-    if (DidIt) {
-      // did_it = 1;
-      CGF.Builder.CreateAlignedStore(CGF.Builder.getInt32(1), DidIt,
-                                     DidIt->getAlignment());
-    }
-  });
+  emitIfStmt(
+      CGF, IsSingle, OMPD_single, Loc, [&](CodeGenFunction &CGF) -> void {
+        CodeGenFunction::RunCleanupsScope Scope(CGF);
+        CGF.EHStack.pushCleanup<SingleCallEndCleanup>(
+            NormalAndEHCleanup, createRuntimeFunction(OMPRTL__kmpc_end_single),
+            llvm::makeArrayRef(Args));
+        SingleOpGen(CGF);
+        if (DidIt) {
+          // did_it = 1;
+          CGF.Builder.CreateAlignedStore(CGF.Builder.getInt32(1), DidIt,
+                                         DidIt->getAlignment());
+        }
+      });
   // call __kmpc_copyprivate(ident_t *, gtid, <buf_size>, <copyprivate list>,
   // <copy_func>, did_it);
   if (DidIt) {
@@ -1469,13 +1514,15 @@ void CGOpenMPRuntime::emitOrderedRegion(CodeGenFunction &CGF,
     CGF.EHStack.pushCleanup<CallEndCleanup<std::extent<decltype(Args)>::value>>(
         NormalAndEHCleanup, createRuntimeFunction(OMPRTL__kmpc_end_ordered),
         llvm::makeArrayRef(Args));
-    emitInlinedDirective(CGF, OrderedOpGen);
+    emitInlinedDirective(CGF, OMPD_ordered, OrderedOpGen);
   }
 }
 
 void CGOpenMPRuntime::emitBarrierCall(CodeGenFunction &CGF, SourceLocation Loc,
-                                      OpenMPDirectiveKind Kind) {
+                                      OpenMPDirectiveKind Kind,
+                                      bool CheckForCancel) {
   // Build call __kmpc_cancel_barrier(loc, thread_id);
+  // Build call __kmpc_barrier(loc, thread_id);
   OpenMPLocationFlags Flags = OMP_IDENT_KMPC;
   if (Kind == OMPD_for) {
     Flags =
@@ -1491,15 +1538,34 @@ void CGOpenMPRuntime::emitBarrierCall(CodeGenFunction &CGF, SourceLocation Loc,
   } else {
     Flags = static_cast<OpenMPLocationFlags>(Flags | OMP_IDENT_BARRIER_IMPL);
   }
-  // Build call __kmpc_cancel_barrier(loc, thread_id);
-  // Replace __kmpc_barrier() function by __kmpc_cancel_barrier() because this
-  // one provides the same functionality and adds initial support for
-  // cancellation constructs introduced in OpenMP 4.0. __kmpc_cancel_barrier()
-  // is provided default by the runtime library so it safe to make such
-  // replacement.
+  // Build call __kmpc_cancel_barrier(loc, thread_id) or __kmpc_barrier(loc,
+  // thread_id);
   llvm::Value *Args[] = {emitUpdateLocation(CGF, Loc, Flags),
                          getThreadID(CGF, Loc)};
-  CGF.EmitRuntimeCall(createRuntimeFunction(OMPRTL__kmpc_cancel_barrier), Args);
+  if (auto *OMPRegionInfo =
+          dyn_cast_or_null<CGOpenMPRegionInfo>(CGF.CapturedStmtInfo)) {
+    auto CancelDestination =
+        CGF.getOMPCancelDestination(OMPRegionInfo->getDirectiveKind());
+    if (CancelDestination.isValid()) {
+      auto *Result = CGF.EmitRuntimeCall(
+          createRuntimeFunction(OMPRTL__kmpc_cancel_barrier), Args);
+      if (CheckForCancel) {
+        // if (__kmpc_cancel_barrier()) {
+        //   exit from construct;
+        // }
+        auto *ExitBB = CGF.createBasicBlock(".cancel.exit");
+        auto *ContBB = CGF.createBasicBlock(".cancel.continue");
+        auto *Cmp = CGF.Builder.CreateIsNotNull(Result);
+        CGF.Builder.CreateCondBr(Cmp, ExitBB, ContBB);
+        CGF.EmitBlock(ExitBB);
+        //   exit from construct;
+        CGF.EmitBranchThroughCleanup(CancelDestination);
+        CGF.EmitBlock(ContBB, /*IsFinished=*/true);
+      }
+      return;
+    }
+  }
+  CGF.EmitRuntimeCall(createRuntimeFunction(OMPRTL__kmpc_barrier), Args);
 }
 
 /// \brief Schedule types for 'omp for' loops (these enumerators are taken from
@@ -1655,7 +1721,7 @@ llvm::Value *CGOpenMPRuntime::emitForNext(CodeGenFunction &CGF,
       CGF.EmitRuntimeCall(createDispatchNextFunction(IVSize, IVSigned), Args);
   return CGF.EmitScalarConversion(
       Call, CGF.getContext().getIntTypeForBitwidth(32, /* Signed */ true),
-      CGF.getContext().BoolTy);
+      CGF.getContext().BoolTy, Loc);
 }
 
 void CGOpenMPRuntime::emitNumThreadsClause(CodeGenFunction &CGF,
@@ -2672,8 +2738,101 @@ void CGOpenMPRuntime::emitTaskwaitCall(CodeGenFunction &CGF,
 }
 
 void CGOpenMPRuntime::emitInlinedDirective(CodeGenFunction &CGF,
+                                           OpenMPDirectiveKind InnerKind,
                                            const RegionCodeGenTy &CodeGen) {
-  InlinedOpenMPRegionRAII Region(CGF, CodeGen);
+  InlinedOpenMPRegionRAII Region(CGF, CodeGen, InnerKind);
   CGF.CapturedStmtInfo->EmitBody(CGF, /*S=*/nullptr);
+}
+
+namespace {
+enum RTCancelKind {
+  CancelNoreq = 0,
+  CancelParallel = 1,
+  CancelLoop = 2,
+  CancelSections = 3,
+  CancelTaskgroup = 4
+};
+}
+
+static RTCancelKind getCancellationKind(OpenMPDirectiveKind CancelRegion) {
+  RTCancelKind CancelKind = CancelNoreq;
+  if (CancelRegion == OMPD_parallel)
+    CancelKind = CancelParallel;
+  else if (CancelRegion == OMPD_for)
+    CancelKind = CancelLoop;
+  else if (CancelRegion == OMPD_sections)
+    CancelKind = CancelSections;
+  else {
+    assert(CancelRegion == OMPD_taskgroup);
+    CancelKind = CancelTaskgroup;
+  }
+  return CancelKind;
+}
+
+void CGOpenMPRuntime::emitCancellationPointCall(
+    CodeGenFunction &CGF, SourceLocation Loc,
+    OpenMPDirectiveKind CancelRegion) {
+  // Build call kmp_int32 __kmpc_cancellationpoint(ident_t *loc, kmp_int32
+  // global_tid, kmp_int32 cncl_kind);
+  if (auto *OMPRegionInfo =
+          dyn_cast_or_null<CGOpenMPRegionInfo>(CGF.CapturedStmtInfo)) {
+    auto CancelDest =
+        CGF.getOMPCancelDestination(OMPRegionInfo->getDirectiveKind());
+    if (CancelDest.isValid()) {
+      llvm::Value *Args[] = {
+          emitUpdateLocation(CGF, Loc), getThreadID(CGF, Loc),
+          CGF.Builder.getInt32(getCancellationKind(CancelRegion))};
+      // Ignore return result until untied tasks are supported.
+      auto *Result = CGF.EmitRuntimeCall(
+          createRuntimeFunction(OMPRTL__kmpc_cancellationpoint), Args);
+      // if (__kmpc_cancellationpoint()) {
+      //  __kmpc_cancel_barrier();
+      //   exit from construct;
+      // }
+      auto *ExitBB = CGF.createBasicBlock(".cancel.exit");
+      auto *ContBB = CGF.createBasicBlock(".cancel.continue");
+      auto *Cmp = CGF.Builder.CreateIsNotNull(Result);
+      CGF.Builder.CreateCondBr(Cmp, ExitBB, ContBB);
+      CGF.EmitBlock(ExitBB);
+      // __kmpc_cancel_barrier();
+      emitBarrierCall(CGF, Loc, OMPD_unknown, /*CheckForCancel=*/false);
+      // exit from construct;
+      CGF.EmitBranchThroughCleanup(CancelDest);
+      CGF.EmitBlock(ContBB, /*IsFinished=*/true);
+    }
+  }
+}
+
+void CGOpenMPRuntime::emitCancelCall(CodeGenFunction &CGF, SourceLocation Loc,
+                                     OpenMPDirectiveKind CancelRegion) {
+  // Build call kmp_int32 __kmpc_cancel(ident_t *loc, kmp_int32 global_tid,
+  // kmp_int32 cncl_kind);
+  if (auto *OMPRegionInfo =
+          dyn_cast_or_null<CGOpenMPRegionInfo>(CGF.CapturedStmtInfo)) {
+    auto CancelDest =
+        CGF.getOMPCancelDestination(OMPRegionInfo->getDirectiveKind());
+    if (CancelDest.isValid()) {
+      llvm::Value *Args[] = {
+          emitUpdateLocation(CGF, Loc), getThreadID(CGF, Loc),
+          CGF.Builder.getInt32(getCancellationKind(CancelRegion))};
+      // Ignore return result until untied tasks are supported.
+      auto *Result =
+          CGF.EmitRuntimeCall(createRuntimeFunction(OMPRTL__kmpc_cancel), Args);
+      // if (__kmpc_cancel()) {
+      //  __kmpc_cancel_barrier();
+      //   exit from construct;
+      // }
+      auto *ExitBB = CGF.createBasicBlock(".cancel.exit");
+      auto *ContBB = CGF.createBasicBlock(".cancel.continue");
+      auto *Cmp = CGF.Builder.CreateIsNotNull(Result);
+      CGF.Builder.CreateCondBr(Cmp, ExitBB, ContBB);
+      CGF.EmitBlock(ExitBB);
+      // __kmpc_cancel_barrier();
+      emitBarrierCall(CGF, Loc, OMPD_unknown, /*CheckForCancel=*/false);
+      // exit from construct;
+      CGF.EmitBranchThroughCleanup(CancelDest);
+      CGF.EmitBlock(ContBB, /*IsFinished=*/true);
+    }
+  }
 }
 

@@ -6555,7 +6555,13 @@ class DataRecursiveIntBinOpEvaluator {
     EvalResult LHSResult; // meaningful only for binary operator expression.
     enum { AnyExprKind, BinOpKind, BinOpVisitedLHSKind } Kind;
 
-    Job() : StoredInfo(nullptr) {}
+    Job() = default;
+    Job(Job &&J)
+        : E(J.E), LHSResult(J.LHSResult), Kind(J.Kind),
+          StoredInfo(J.StoredInfo), OldEvalStatus(J.OldEvalStatus) {
+      J.StoredInfo = nullptr;
+    }
+
     void startSpeculativeEval(EvalInfo &Info) {
       OldEvalStatus = Info.EvalStatus;
       Info.EvalStatus.Diag = nullptr;
@@ -6567,7 +6573,7 @@ class DataRecursiveIntBinOpEvaluator {
       }
     }
   private:
-    EvalInfo *StoredInfo; // non-null if status changed.
+    EvalInfo *StoredInfo = nullptr; // non-null if status changed.
     Expr::EvalStatus OldEvalStatus;
   };
 
@@ -7251,6 +7257,13 @@ bool IntExprEvaluator::VisitUnaryExprOrTypeTraitExpr(
       return false;
     return Success(Sizeof, E);
   }
+  case UETT_OpenMPRequiredSimdAlign:
+    assert(E->isArgumentType());
+    return Success(
+        Info.Ctx.toCharUnitsFromBits(
+                    Info.Ctx.getOpenMPDefaultSimdAlign(E->getArgumentType()))
+            .getQuantity(),
+        E);
   }
 
   llvm_unreachable("unknown expr/type trait");

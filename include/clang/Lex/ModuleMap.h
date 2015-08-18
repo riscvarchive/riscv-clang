@@ -35,6 +35,22 @@ class DiagnosticConsumer;
 class DiagnosticsEngine;
 class HeaderSearch;
 class ModuleMapParser;
+
+/// \brief A mechanism to observe the actions of the module map parser as it
+/// reads module map files.
+class ModuleMapCallbacks {
+public:
+  virtual ~ModuleMapCallbacks() {}
+
+  /// \brief Called when a module map file has been read.
+  ///
+  /// \param FileStart A SourceLocation referring to the start of the file's
+  /// contents.
+  /// \param File The file itself.
+  /// \param IsSystem Whether this is a module map from a system include path.
+  virtual void moduleMapFileRead(SourceLocation FileStart,
+                                 const FileEntry &File, bool IsSystem) {}
+};
   
 class ModuleMap {
   SourceManager &SourceMgr;
@@ -42,6 +58,8 @@ class ModuleMap {
   const LangOptions &LangOpts;
   const TargetInfo *Target;
   HeaderSearch &HeaderInfo;
+
+  llvm::SmallVector<std::unique_ptr<ModuleMapCallbacks>, 1> Callbacks;
   
   /// \brief The directory used for Clang-supplied, builtin include headers,
   /// such as "stdint.h".
@@ -231,8 +249,7 @@ private:
     return static_cast<bool>(findHeaderInUmbrellaDirs(File, IntermediateDirs));
   }
 
-  Module *inferFrameworkModule(StringRef ModuleName,
-                               const DirectoryEntry *FrameworkDir,
+  Module *inferFrameworkModule(const DirectoryEntry *FrameworkDir,
                                Attributes Attrs, Module *Parent);
 
 public:
@@ -262,6 +279,11 @@ public:
   /// files, such as our stdarg.h or tgmath.h.
   void setBuiltinIncludeDir(const DirectoryEntry *Dir) {
     BuiltinIncludeDir = Dir;
+  }
+
+  /// \brief Add a module map callback.
+  void addModuleMapCallbacks(std::unique_ptr<ModuleMapCallbacks> Callback) {
+    Callbacks.push_back(std::move(Callback));
   }
 
   /// \brief Retrieve the module that owns the given header file, if any.
@@ -344,10 +366,9 @@ public:
 
   /// \brief Infer the contents of a framework module map from the given
   /// framework directory.
-  Module *inferFrameworkModule(StringRef ModuleName, 
-                               const DirectoryEntry *FrameworkDir,
+  Module *inferFrameworkModule(const DirectoryEntry *FrameworkDir,
                                bool IsSystem, Module *Parent);
-  
+
   /// \brief Retrieve the module map file containing the definition of the given
   /// module.
   ///
@@ -454,9 +475,13 @@ public:
   /// \param HomeDir The directory in which relative paths within this module
   ///        map file will be resolved.
   ///
+  /// \param ExternModuleLoc The location of the "extern module" declaration
+  ///        that caused us to load this module map file, if any.
+  ///
   /// \returns true if an error occurred, false otherwise.
   bool parseModuleMapFile(const FileEntry *File, bool IsSystem,
-                          const DirectoryEntry *HomeDir);
+                          const DirectoryEntry *HomeDir,
+                          SourceLocation ExternModuleLoc = SourceLocation());
     
   /// \brief Dump the contents of the module map, for debugging purposes.
   void dump();

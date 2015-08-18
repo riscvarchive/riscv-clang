@@ -1577,11 +1577,9 @@ public:
 };
 
 class X86_64TargetCodeGenInfo : public TargetCodeGenInfo {
-  X86AVXABILevel AVXLevel;
 public:
   X86_64TargetCodeGenInfo(CodeGen::CodeGenTypes &CGT, X86AVXABILevel AVXLevel)
-      : TargetCodeGenInfo(new X86_64ABIInfo(CGT, AVXLevel)),
-        AVXLevel(AVXLevel) {}
+      : TargetCodeGenInfo(new X86_64ABIInfo(CGT, AVXLevel)) {}
 
   const X86_64ABIInfo &getABIInfo() const {
     return static_cast<const X86_64ABIInfo&>(TargetCodeGenInfo::getABIInfo());
@@ -1647,10 +1645,6 @@ public:
             ('T' << 24);
     return llvm::ConstantInt::get(CGM.Int32Ty, Sig);
   }
-
-  unsigned getOpenMPSimdDefaultAlignment(QualType) const override {
-    return getNativeVectorSizeForAVXABI(AVXLevel) / 8;
-  }
 };
 
 class PS4TargetCodeGenInfo : public X86_64TargetCodeGenInfo {
@@ -1661,7 +1655,11 @@ public:
   void getDependentLibraryOption(llvm::StringRef Lib,
                                  llvm::SmallString<24> &Opt) const override {
     Opt = "\01";
-    Opt += Lib;
+    // If the argument contains a space, enclose it in quotes.
+    if (Lib.find(" ") != StringRef::npos)
+      Opt += "\"" + Lib.str() + "\"";
+    else
+      Opt += Lib;
   }
 };
 
@@ -1722,11 +1720,10 @@ void WinX86_32TargetCodeGenInfo::setTargetAttributes(const Decl *D,
 }
 
 class WinX86_64TargetCodeGenInfo : public TargetCodeGenInfo {
-  X86AVXABILevel AVXLevel;
 public:
   WinX86_64TargetCodeGenInfo(CodeGen::CodeGenTypes &CGT,
                              X86AVXABILevel AVXLevel)
-      : TargetCodeGenInfo(new WinX86_64ABIInfo(CGT)), AVXLevel(AVXLevel) {}
+      : TargetCodeGenInfo(new WinX86_64ABIInfo(CGT)) {}
 
   void setTargetAttributes(const Decl *D, llvm::GlobalValue *GV,
                            CodeGen::CodeGenModule &CGM) const override;
@@ -1755,10 +1752,6 @@ public:
                                llvm::StringRef Value,
                                llvm::SmallString<32> &Opt) const override {
     Opt = "/FAILIFMISMATCH:\"" + Name.str() + "=" + Value.str() + "\"";
-  }
-
-  unsigned getOpenMPSimdDefaultAlignment(QualType) const override {
-    return getNativeVectorSizeForAVXABI(AVXLevel) / 8;
   }
 };
 
@@ -1869,13 +1862,20 @@ void X86_64ABIInfo::classify(QualType Ty, uint64_t OffsetBase,
       Hi = Integer;
     } else if (k >= BuiltinType::Bool && k <= BuiltinType::LongLong) {
       Current = Integer;
-    } else if ((k == BuiltinType::Float || k == BuiltinType::Double) ||
-               (k == BuiltinType::LongDouble &&
-                getTarget().getTriple().isOSNaCl())) {
+    } else if (k == BuiltinType::Float || k == BuiltinType::Double) {
       Current = SSE;
     } else if (k == BuiltinType::LongDouble) {
-      Lo = X87;
-      Hi = X87Up;
+      const llvm::fltSemantics *LDF = &getTarget().getLongDoubleFormat();
+      if (LDF == &llvm::APFloat::IEEEquad) {
+        Lo = SSE;
+        Hi = SSEUp;
+      } else if (LDF == &llvm::APFloat::x87DoubleExtended) {
+        Lo = X87;
+        Hi = X87Up;
+      } else if (LDF == &llvm::APFloat::IEEEdouble) {
+        Current = SSE;
+      } else
+        llvm_unreachable("unexpected long double representation!");
     }
     // FIXME: _Decimal32 and _Decimal64 are SSE.
     // FIXME: _float128 and _Decimal128 are (SSE, SSEUp).
@@ -1918,16 +1918,18 @@ void X86_64ABIInfo::classify(QualType Ty, uint64_t OffsetBase,
 
   if (const VectorType *VT = Ty->getAs<VectorType>()) {
     uint64_t Size = getContext().getTypeSize(VT);
-    if (Size == 32) {
-      // gcc passes all <4 x char>, <2 x short>, <1 x int>, <1 x
-      // float> as integer.
+    if (Size == 1 || Size == 8 || Size == 16 || Size == 32) {
+      // gcc passes the following as integer:
+      // 4 bytes - <4 x char>, <2 x short>, <1 x int>, <1 x float>
+      // 2 bytes - <2 x char>, <1 x short>
+      // 1 byte  - <1 x char>
       Current = Integer;
 
       // If this type crosses an eightbyte boundary, it should be
       // split.
-      uint64_t EB_Real = (OffsetBase) / 64;
-      uint64_t EB_Imag = (OffsetBase + Size - 1) / 64;
-      if (EB_Real != EB_Imag)
+      uint64_t EB_Lo = (OffsetBase) / 64;
+      uint64_t EB_Hi = (OffsetBase + Size - 1) / 64;
+      if (EB_Lo != EB_Hi)
         Hi = Lo;
     } else if (Size == 64) {
       // gcc passes <1 x double> in memory. :(
@@ -1978,14 +1980,21 @@ void X86_64ABIInfo::classify(QualType Ty, uint64_t OffsetBase,
         Current = Integer;
       else if (Size <= 128)
         Lo = Hi = Integer;
-    } else if (ET == getContext().FloatTy)
+    } else if (ET == getContext().FloatTy) {
       Current = SSE;
-    else if (ET == getContext().DoubleTy ||
-             (ET == getContext().LongDoubleTy &&
-              getTarget().getTriple().isOSNaCl()))
+    } else if (ET == getContext().DoubleTy) {
       Lo = Hi = SSE;
-    else if (ET == getContext().LongDoubleTy)
-      Current = ComplexX87;
+    } else if (ET == getContext().LongDoubleTy) {
+      const llvm::fltSemantics *LDF = &getTarget().getLongDoubleFormat();
+      if (LDF == &llvm::APFloat::IEEEquad)
+        Current = Memory;
+      else if (LDF == &llvm::APFloat::x87DoubleExtended)
+        Current = ComplexX87;
+      else if (LDF == &llvm::APFloat::IEEEdouble)
+        Lo = Hi = SSE;
+      else
+        llvm_unreachable("unexpected long double representation!");
+    }
 
     // If this complex type crosses an eightbyte boundary then it
     // should be split.
@@ -2084,8 +2093,10 @@ void X86_64ABIInfo::classify(QualType Ty, uint64_t OffsetBase,
         classify(I.getType(), Offset, FieldLo, FieldHi, isNamedArg);
         Lo = merge(Lo, FieldLo);
         Hi = merge(Hi, FieldHi);
-        if (Lo == Memory || Hi == Memory)
-          break;
+        if (Lo == Memory || Hi == Memory) {
+          postMerge(Size, Lo, Hi);
+          return;
+        }
       }
     }
 
@@ -2105,11 +2116,13 @@ void X86_64ABIInfo::classify(QualType Ty, uint64_t OffsetBase,
       //
       if (Size > 128 && getContext().getTypeSize(i->getType()) != 256) {
         Lo = Memory;
+        postMerge(Size, Lo, Hi);
         return;
       }
       // Note, skip this test for bit-fields, see below.
       if (!BitField && Offset % getContext().getTypeAlign(i->getType())) {
         Lo = Memory;
+        postMerge(Size, Lo, Hi);
         return;
       }
 
@@ -2250,7 +2263,8 @@ llvm::Type *X86_64ABIInfo::GetByteVectorType(QualType Ty) const {
     Ty = QualType(InnerTy, 0);
 
   llvm::Type *IRType = CGT.ConvertType(Ty);
-  if(isa<llvm::VectorType>(IRType))
+  if (isa<llvm::VectorType>(IRType) ||
+      IRType->getTypeID() == llvm::Type::FP128TyID)
     return IRType;
 
   // We couldn't find the preferred IR vector type for 'Ty'.
@@ -3171,10 +3185,6 @@ public:
 
   bool initDwarfEHRegSizeTable(CodeGen::CodeGenFunction &CGF,
                                llvm::Value *Address) const override;
-
-  unsigned getOpenMPSimdDefaultAlignment(QualType) const override {
-    return 16; // Natural alignment for Altivec vectors.
-  }
 };
 
 }
@@ -3414,13 +3424,11 @@ public:
 };
 
 class PPC64_SVR4_TargetCodeGenInfo : public TargetCodeGenInfo {
-  bool HasQPX;
 
 public:
   PPC64_SVR4_TargetCodeGenInfo(CodeGenTypes &CGT,
                                PPC64_SVR4_ABIInfo::ABIKind Kind, bool HasQPX)
-    : TargetCodeGenInfo(new PPC64_SVR4_ABIInfo(CGT, Kind, HasQPX)),
-      HasQPX(HasQPX) {}
+      : TargetCodeGenInfo(new PPC64_SVR4_ABIInfo(CGT, Kind, HasQPX)) {}
 
   int getDwarfEHStackPointer(CodeGen::CodeGenModule &M) const override {
     // This is recovered from gcc output.
@@ -3429,15 +3437,6 @@ public:
 
   bool initDwarfEHRegSizeTable(CodeGen::CodeGenFunction &CGF,
                                llvm::Value *Address) const override;
-
-  unsigned getOpenMPSimdDefaultAlignment(QualType QT) const override {
-    if (HasQPX)
-      if (const PointerType *PT = QT->getAs<PointerType>())
-        if (PT->getPointeeType()->isSpecificBuiltinType(BuiltinType::Double))
-          return 32; // Natural alignment for QPX doubles.
-
-    return 16; // Natural alignment for Altivec and VSX vectors.
-  }
 };
 
 class PPC64TargetCodeGenInfo : public DefaultTargetCodeGenInfo {
@@ -3451,10 +3450,6 @@ public:
 
   bool initDwarfEHRegSizeTable(CodeGen::CodeGenFunction &CGF,
                                llvm::Value *Address) const override;
-
-  unsigned getOpenMPSimdDefaultAlignment(QualType) const override {
-    return 16; // Natural alignment for Altivec vectors.
-  }
 };
 
 }
@@ -6751,7 +6746,7 @@ class TypeStringCache {
   unsigned IncompleteCount;     // Number of Incomplete entries in the Map.
   unsigned IncompleteUsedCount; // Number of IncompleteUsed entries in the Map.
 public:
-  TypeStringCache() : IncompleteCount(0), IncompleteUsedCount(0) {};
+  TypeStringCache() : IncompleteCount(0), IncompleteUsedCount(0) {}
   void addIncomplete(const IdentifierInfo *ID, std::string StubEnc);
   bool removeIncomplete(const IdentifierInfo *ID);
   void addIfComplete(const IdentifierInfo *ID, StringRef Str,
@@ -6765,8 +6760,8 @@ class FieldEncoding {
   bool HasName;
   std::string Enc;
 public:
-  FieldEncoding(bool b, SmallStringEnc &e) : HasName(b), Enc(e.c_str()) {};
-  StringRef str() {return Enc.c_str();};
+  FieldEncoding(bool b, SmallStringEnc &e) : HasName(b), Enc(e.c_str()) {}
+  StringRef str() {return Enc.c_str();}
   bool operator<(const FieldEncoding &rhs) const {
     if (HasName != rhs.HasName) return HasName;
     return Enc < rhs.Enc;
@@ -6980,9 +6975,7 @@ static bool extractFieldType(SmallVectorImpl<FieldEncoding> &FE,
     if (Field->isBitField()) {
       Enc += "b(";
       llvm::raw_svector_ostream OS(Enc);
-      OS.resync();
       OS << Field->getBitWidthValue(CGM.getContext());
-      OS.flush();
       Enc += ':';
     }
     if (!appendType(Enc, Field->getType(), CGM, TSC))
@@ -7320,6 +7313,8 @@ const TargetCodeGenInfo &CodeGenModule::getTargetCodeGenInfo() {
     return *(TheTargetCodeGenInfo = new PNaClTargetCodeGenInfo(Types));
   case llvm::Triple::mips:
   case llvm::Triple::mipsel:
+    if (Triple.getOS() == llvm::Triple::NaCl)
+      return *(TheTargetCodeGenInfo = new PNaClTargetCodeGenInfo(Types));
     return *(TheTargetCodeGenInfo = new MIPSTargetCodeGenInfo(Types, true));
 
   case llvm::Triple::mips64:

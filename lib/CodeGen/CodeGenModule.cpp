@@ -74,16 +74,18 @@ static CGCXXABI *createCXXABI(CodeGenModule &CGM) {
   llvm_unreachable("invalid C++ ABI kind");
 }
 
-CodeGenModule::CodeGenModule(ASTContext &C, const CodeGenOptions &CGO,
-                             llvm::Module &M, const llvm::DataLayout &TD,
+CodeGenModule::CodeGenModule(ASTContext &C, const HeaderSearchOptions &HSO,
+                             const PreprocessorOptions &PPO,
+                             const CodeGenOptions &CGO, llvm::Module &M,
                              DiagnosticsEngine &diags,
                              CoverageSourceInfo *CoverageInfo)
-    : Context(C), LangOpts(C.getLangOpts()), CodeGenOpts(CGO), TheModule(M),
-      Diags(diags), TheDataLayout(TD), Target(C.getTargetInfo()),
-      ABI(createCXXABI(*this)), VMContext(M.getContext()), TBAA(nullptr),
-      TheTargetCodeGenInfo(nullptr), Types(*this), VTables(*this),
-      ObjCRuntime(nullptr), OpenCLRuntime(nullptr), OpenMPRuntime(nullptr),
-      CUDARuntime(nullptr), DebugInfo(nullptr), ARCData(nullptr),
+    : Context(C), LangOpts(C.getLangOpts()), HeaderSearchOpts(HSO),
+      PreprocessorOpts(PPO), CodeGenOpts(CGO), TheModule(M), Diags(diags),
+      Target(C.getTargetInfo()), ABI(createCXXABI(*this)),
+      VMContext(M.getContext()), TBAA(nullptr), TheTargetCodeGenInfo(nullptr),
+      Types(*this), VTables(*this), ObjCRuntime(nullptr),
+      OpenCLRuntime(nullptr), OpenMPRuntime(nullptr), CUDARuntime(nullptr),
+      DebugInfo(nullptr), ARCData(nullptr),
       NoObjCARCExceptionsMetadata(nullptr), RRData(nullptr), PGOReader(nullptr),
       CFConstantStringClassRef(nullptr), ConstantStringClassRef(nullptr),
       NSConstantStringType(nullptr), NSConcreteGlobalBlock(nullptr),
@@ -367,11 +369,16 @@ void CodeGenModule::Release() {
       (Context.getLangOpts().Modules || !LinkerOptionsMetadata.empty())) {
     EmitModuleLinkOptions();
   }
-  if (CodeGenOpts.DwarfVersion)
+  if (CodeGenOpts.DwarfVersion) {
     // We actually want the latest version when there are conflicts.
     // We can change from Warning to Latest if such mode is supported.
     getModule().addModuleFlag(llvm::Module::Warning, "Dwarf Version",
                               CodeGenOpts.DwarfVersion);
+  }
+  if (CodeGenOpts.EmitCodeView) {
+    // Indicate that we want CodeView in the metadata.
+    getModule().addModuleFlag(llvm::Module::Warning, "CodeView", 1);
+  }
   if (DebugInfo)
     // We support a single version in the linked module. The LLVM
     // parser will drop debug info with a different version number
@@ -1259,6 +1266,11 @@ bool CodeGenModule::MayBeEmittedEagerly(const ValueDecl *Global) {
       // Implicit template instantiations may change linkage if they are later
       // explicitly instantiated, so they should not be emitted eagerly.
       return false;
+  // If OpenMP is enabled and threadprivates must be generated like TLS, delay
+  // codegen for global variables, because they may be marked as threadprivate.
+  if (LangOpts.OpenMP && LangOpts.OpenMPUseTLS &&
+      getContext().getTargetInfo().isTLSSupported() && isa<VarDecl>(Global))
+    return false;
 
   return true;
 }
@@ -1427,7 +1439,7 @@ namespace {
       unsigned BuiltinID = FD->getBuiltinID();
       if (!BuiltinID || !BI.isLibFunction(BuiltinID))
         return true;
-      StringRef BuiltinName = BI.GetName(BuiltinID);
+      StringRef BuiltinName = BI.getName(BuiltinID);
       if (BuiltinName.startswith("__builtin_") &&
           Name == BuiltinName.slice(strlen("__builtin_"), StringRef::npos)) {
         Result = true;
@@ -1454,12 +1466,7 @@ CodeGenModule::isTriviallyRecursive(const FunctionDecl *FD) {
     Name = FD->getName();
   }
 
-  auto &BI = Context.BuiltinInfo;
-  unsigned BuiltinID = Context.Idents.get(Name).getBuiltinID();
-  if (!BuiltinID || !BI.isPredefinedLibFunction(BuiltinID))
-    return false;
-
-  FunctionIsDirectlyRecursive Walker(Name, BI);
+  FunctionIsDirectlyRecursive Walker(Name, Context.BuiltinInfo);
   Walker.TraverseFunctionDecl(const_cast<FunctionDecl*>(FD));
   return Walker.Result;
 }
@@ -1890,8 +1897,8 @@ void CodeGenModule::EmitTentativeDefinition(const VarDecl *D) {
 }
 
 CharUnits CodeGenModule::GetTargetTypeStoreSize(llvm::Type *Ty) const {
-    return Context.toCharUnitsFromBits(
-      TheDataLayout.getTypeStoreSizeInBits(Ty));
+  return Context.toCharUnitsFromBits(
+      getDataLayout().getTypeStoreSizeInBits(Ty));
 }
 
 unsigned CodeGenModule::GetGlobalVarAddressSpace(const VarDecl *D,
@@ -2946,7 +2953,6 @@ CodeGenModule::GetAddrOfConstantStringFromLiteral(const StringLiteral *S,
       getCXXABI().getMangleContext().shouldMangleStringLiteral(S)) {
     llvm::raw_svector_ostream Out(MangledNameBuffer);
     getCXXABI().getMangleContext().mangleStringLiteral(S, Out);
-    Out.flush();
 
     LT = llvm::GlobalValue::LinkOnceODRLinkage;
     GlobalVariableName = MangledNameBuffer;
@@ -3023,8 +3029,7 @@ llvm::Constant *CodeGenModule::GetAddrOfGlobalTemporary(
   if (Init == E->GetTemporaryExpr())
     MaterializedType = E->getType();
 
-  llvm::Constant *&Slot = MaterializedGlobalTemporaryMap[E];
-  if (Slot)
+  if (llvm::Constant *Slot = MaterializedGlobalTemporaryMap[E])
     return Slot;
 
   // FIXME: If an externally-visible declaration extends multiple temporaries,
@@ -3034,7 +3039,6 @@ llvm::Constant *CodeGenModule::GetAddrOfGlobalTemporary(
   llvm::raw_svector_ostream Out(Name);
   getCXXABI().getMangleContext().mangleReferenceTemporary(
       VD, E->getManglingNumber(), Out);
-  Out.flush();
 
   APValue *Value = nullptr;
   if (E->getStorageDuration() == SD_Static) {
@@ -3096,7 +3100,7 @@ llvm::Constant *CodeGenModule::GetAddrOfGlobalTemporary(
     GV->setComdat(TheModule.getOrInsertComdat(GV->getName()));
   if (VD->getTLSKind())
     setTLSMode(GV, *VD);
-  Slot = GV;
+  MaterializedGlobalTemporaryMap[E] = GV;
   return GV;
 }
 
@@ -3364,6 +3368,8 @@ void CodeGenModule::EmitTopLevelDecl(Decl *D) {
           Owner->getTopLevelModule()->Name == getLangOpts().CurrentModule)
         break;
     }
+    if (CGDebugInfo *DI = getModuleDebugInfo())
+      DI->EmitImportDecl(*Import);
 
     ImportedModules.insert(Import->getImportedModule());
     break;
@@ -3402,7 +3408,7 @@ void CodeGenModule::AddDeferredUnusedCoverageMapping(Decl *D) {
   case Decl::ObjCMethod:
   case Decl::CXXConstructor:
   case Decl::CXXDestructor: {
-    if (!cast<FunctionDecl>(D)->hasBody())
+    if (!cast<FunctionDecl>(D)->doesThisDeclarationHaveABody())
       return;
     auto I = DeferredEmptyCoverageMappingDecls.find(D);
     if (I == DeferredEmptyCoverageMappingDecls.end())

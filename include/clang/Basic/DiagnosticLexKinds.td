@@ -57,8 +57,9 @@ def warn_cxx98_compat_no_newline_eof : Warning<
 
 def ext_dollar_in_identifier : Extension<"'$' in identifier">,
   InGroup<DiagGroup<"dollar-in-identifier-extension">>;
-def ext_charize_microsoft : Extension<"charizing operator #@ is a Microsoft extension">,
-  InGroup<Microsoft>;
+def ext_charize_microsoft : Extension<
+  "charizing operator #@ is a Microsoft extension">,
+  InGroup<MicrosoftCharize>;
 
 def ext_token_used : Extension<"extension used">,
   InGroup<DiagGroup<"language-extension-token">>;
@@ -310,8 +311,8 @@ def ext_pp_import_directive : Extension<"#import is a language extension">,
 def err_pp_import_directive_ms : Error<
   "#import of type library is an unsupported Microsoft feature">;
 def ext_pp_include_search_ms : ExtWarn<
-  "#include resolved using non-portable MSVC search rules as: %0">,
-  InGroup<DiagGroup<"msvc-include">>;
+  "#include resolved using non-portable Microsoft search rules as: %0">,
+  InGroup<MicrosoftInclude>;
 
 def ext_pp_ident_directive : Extension<"#ident is a language extension">;
 def ext_pp_include_next_directive : Extension<
@@ -510,7 +511,7 @@ def ext_pp_bad_paste_ms : ExtWarn<
 def err_pp_operator_used_as_macro_name : Error<
   "C++ operator %0 (aka %1) used as a macro name">;
 def ext_pp_operator_used_as_macro_name : Extension<
-  "C++ operator %0 (aka %1) used as a macro name">, InGroup<Microsoft>;
+  err_pp_operator_used_as_macro_name.Text>, InGroup<MicrosoftCppMacro>;
 def err_pp_illegal_floating_literal : Error<
   "floating point literal in preprocessor expression">;
 def err_pp_line_requires_integer : Error<
@@ -622,6 +623,8 @@ def warn_mmap_unknown_attribute : Warning<"unknown attribute '%0'">,
 def warn_auto_module_import : Warning<
   "treating #%select{include|import|include_next|__include_macros}0 as an "
   "import of module '%1'">, InGroup<AutoImport>, DefaultIgnore;
+def note_implicit_top_level_module_import_here : Note<
+  "submodule of top-level module '%0' implicitly imported here">;
 def warn_uncovered_module_header : Warning<
   "umbrella header for module '%0' does not include header '%1'">, 
   InGroup<IncompleteUmbrella>;

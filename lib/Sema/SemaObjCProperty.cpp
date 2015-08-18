@@ -1157,7 +1157,9 @@ Decl *Sema::ActOnPropertyImplDecl(Scope *S,
                                  CK_LValueToRValue, SelfExpr, nullptr,
                                  VK_RValue);
       Expr *IvarRefExpr =
-        new (Context) ObjCIvarRefExpr(Ivar, Ivar->getType(), PropertyDiagLoc,
+        new (Context) ObjCIvarRefExpr(Ivar,
+                                      Ivar->getUsageType(SelfDecl->getType()),
+                                      PropertyDiagLoc,
                                       Ivar->getLocation(),
                                       LoadSelfExpr, true, true);
       ExprResult Res = PerformCopyInitialization(
@@ -1207,7 +1209,9 @@ Decl *Sema::ActOnPropertyImplDecl(Scope *S,
                                  CK_LValueToRValue, SelfExpr, nullptr,
                                  VK_RValue);
       Expr *lhs =
-        new (Context) ObjCIvarRefExpr(Ivar, Ivar->getType(), PropertyDiagLoc,
+        new (Context) ObjCIvarRefExpr(Ivar,
+                                      Ivar->getUsageType(SelfDecl->getType()),
+                                      PropertyDiagLoc,
                                       Ivar->getLocation(),
                                       LoadSelfExpr, true, true);
       ObjCMethodDecl::param_iterator P = setterMethod->param_begin();
@@ -1946,10 +1950,16 @@ void Sema::DiagnoseMissingDesignatedInitOverrides(
          I = DesignatedInits.begin(), E = DesignatedInits.end(); I != E; ++I) {
     const ObjCMethodDecl *MD = *I;
     if (!InitSelSet.count(MD->getSelector())) {
-      Diag(ImplD->getLocation(),
-           diag::warn_objc_implementation_missing_designated_init_override)
-        << MD->getSelector();
-      Diag(MD->getLocation(), diag::note_objc_designated_init_marked_here);
+      bool Ignore = false;
+      if (auto *IMD = IFD->getInstanceMethod(MD->getSelector())) {
+        Ignore = IMD->isUnavailable();
+      }
+      if (!Ignore) {
+        Diag(ImplD->getLocation(),
+             diag::warn_objc_implementation_missing_designated_init_override)
+          << MD->getSelector();
+        Diag(MD->getLocation(), diag::note_objc_designated_init_marked_here);
+      }
     }
   }
 }

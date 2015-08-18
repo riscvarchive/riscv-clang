@@ -112,7 +112,7 @@ private:
 ///
 /// FIXME: Do we want to support this now that we have bind()?
 template <typename T>
-internal::Matcher<T> id(const std::string &ID,
+internal::Matcher<T> id(StringRef ID,
                         const internal::BindableMatcher<T> &InnerMatcher) {
   return InnerMatcher.bind(ID);
 }
@@ -2038,7 +2038,8 @@ hasDeclaration(const internal::Matcher<Decl> &InnerMatcher) {
 
 /// \brief Matches on the implicit object argument of a member call expression.
 ///
-/// Example matches y.x() (matcher = callExpr(on(hasType(recordDecl(hasName("Y"))))))
+/// Example matches y.x()
+///   (matcher = memberCallExpr(on(hasType(recordDecl(hasName("Y"))))))
 /// \code
 ///   class Y { public: void x(); };
 ///   void z() { Y y; y.x(); }",
@@ -2250,7 +2251,7 @@ AST_MATCHER_P(DeclaratorDecl, hasTypeLoc, internal::Matcher<TypeLoc>, Inner) {
 ///   class Y { public: void x(); };
 ///   void z() { Y* y; y->x(); }
 /// \endcode
-/// callExpr(on(hasType(asString("class Y *"))))
+/// memberCallExpr(on(hasType(asString("class Y *"))))
 ///   matches y->x()
 AST_MATCHER_P(QualType, asString, std::string, Name) {
   return Name == Node.getAsString();
@@ -2260,7 +2261,8 @@ AST_MATCHER_P(QualType, asString, std::string, Name) {
 /// matches the specified matcher.
 ///
 /// Example matches y->x()
-///     (matcher = callExpr(on(hasType(pointsTo(recordDecl(hasName("Y")))))))
+///   (matcher = memberCallExpr(on(hasType(pointsTo
+///      recordDecl(hasName("Y")))))))
 /// \code
 ///   class Y { public: void x(); };
 ///   void z() { Y *y; y->x(); }
@@ -2367,8 +2369,6 @@ AST_MATCHER_P(DeclRefExpr, to, internal::Matcher<Decl>,
 /// \brief Matches a \c DeclRefExpr that refers to a declaration through a
 /// specific using shadow declaration.
 ///
-/// FIXME: This currently only works for functions. Fix.
-///
 /// Given
 /// \code
 ///   namespace a { void f() {} }
@@ -2378,7 +2378,7 @@ AST_MATCHER_P(DeclRefExpr, to, internal::Matcher<Decl>,
 ///     a::f();  // .. but not this.
 ///   }
 /// \endcode
-/// declRefExpr(throughUsingDeclaration(anything()))
+/// declRefExpr(throughUsingDecl(anything()))
 ///   matches \c f()
 AST_MATCHER_P(DeclRefExpr, throughUsingDecl,
               internal::Matcher<UsingShadowDecl>, InnerMatcher) {
@@ -2448,6 +2448,21 @@ AST_MATCHER(VarDecl, hasLocalStorage) {
 /// \endcode
 AST_MATCHER(VarDecl, hasGlobalStorage) {
   return Node.hasGlobalStorage();
+}
+
+/// \brief Matches a variable declaration that is an exception variable from
+/// a C++ catch block, or an Objective-C \@catch statement.
+///
+/// Example matches x (matcher = varDecl(isExceptionVariable())
+/// \code
+/// void f(int y) {
+///   try {
+///   } catch (int x) {
+///   }
+/// }
+/// \endcode
+AST_MATCHER(VarDecl, isExceptionVariable) {
+  return Node.isExceptionVariable();
 }
 
 /// \brief Checks that a call expression or a constructor call expression has
@@ -2528,6 +2543,23 @@ AST_MATCHER_P2(DeclStmt, containsDeclaration, unsigned, N,
   return InnerMatcher.matches(**Iterator, Finder, Builder);
 }
 
+/// \brief Matches a C++ catch statement that has a catch-all handler.
+///
+/// Given
+/// \code
+///   try {
+///     // ...
+///   } catch (int) {
+///     // ...
+///   } catch (...) {
+///     // ...
+///   }
+/// /endcode
+/// catchStmt(isCatchAll()) matches catch(...) but not catch(int).
+AST_MATCHER(CXXCatchStmt, isCatchAll) {
+  return Node.getExceptionDecl() == nullptr;
+}
+
 /// \brief Matches a constructor initializer.
 ///
 /// Given
@@ -2600,6 +2632,46 @@ AST_MATCHER_P(CXXCtorInitializer, withInitializer,
 ///   will match Foo(int), but not Foo()
 AST_MATCHER(CXXCtorInitializer, isWritten) {
   return Node.isWritten();
+}
+
+/// \brief Matches a constructor initializer if it is initializing a base, as
+/// opposed to a member.
+///
+/// Given
+/// \code
+///   struct B {};
+///   struct D : B {
+///     int I;
+///     D(int i) : I(i) {}
+///   };
+///   struct E : B {
+///     E() : B() {}
+///   };
+/// \endcode
+/// constructorDecl(hasAnyConstructorInitializer(isBaseInitializer()))
+///   will match E(), but not match D(int).
+AST_MATCHER(CXXCtorInitializer, isBaseInitializer) {
+  return Node.isBaseInitializer();
+}
+
+/// \brief Matches a constructor initializer if it is initializing a member, as
+/// opposed to a base.
+///
+/// Given
+/// \code
+///   struct B {};
+///   struct D : B {
+///     int I;
+///     D(int i) : I(i) {}
+///   };
+///   struct E : B {
+///     E() : B() {}
+///   };
+/// \endcode
+/// constructorDecl(hasAnyConstructorInitializer(isMemberInitializer()))
+///   will match D(int), but not match E().
+AST_MATCHER(CXXCtorInitializer, isMemberInitializer) {
+  return Node.isMemberInitializer();
 }
 
 /// \brief Matches any argument of a call expression or a constructor call
@@ -3113,6 +3185,27 @@ AST_MATCHER_P(CXXMethodDecl, ofClass,
 ///   matches A::x
 AST_MATCHER(CXXMethodDecl, isVirtual) {
   return Node.isVirtual();
+}
+
+/// \brief Matches if the given method or class declaration is final.
+///
+/// Given:
+/// \code
+///   class A final {};
+///
+///   struct B {
+///     virtual void f();
+///   };
+///
+///   struct C : B {
+///     void f() final;
+///   };
+/// \endcode
+/// matches A and C::f, but not B, C, or B::f
+AST_POLYMORPHIC_MATCHER(isFinal,
+                        AST_POLYMORPHIC_SUPPORTED_TYPES(CXXRecordDecl,
+                                                        CXXMethodDecl)) {
+  return Node.template hasAttr<FinalAttr>();
 }
 
 /// \brief Matches if the given method declaration is pure.
@@ -4053,6 +4146,72 @@ AST_MATCHER_P(CXXConstructorDecl, forEachConstructorInitializer,
   return Matched;
 }
 
+/// \brief Matches constructor declarations that are copy constructors.
+///
+/// Given
+/// \code
+///   struct S {
+///     S(); // #1
+///     S(const S &); // #2
+///     S(S &&); // #3
+///   };
+/// \endcode
+/// constructorDecl(isCopyConstructor()) will match #2, but not #1 or #3.
+AST_MATCHER(CXXConstructorDecl, isCopyConstructor) {
+  return Node.isCopyConstructor();
+}
+
+/// \brief Matches constructor declarations that are move constructors.
+///
+/// Given
+/// \code
+///   struct S {
+///     S(); // #1
+///     S(const S &); // #2
+///     S(S &&); // #3
+///   };
+/// \endcode
+/// constructorDecl(isMoveConstructor()) will match #3, but not #1 or #2.
+AST_MATCHER(CXXConstructorDecl, isMoveConstructor) {
+  return Node.isMoveConstructor();
+}
+
+/// \brief Matches constructor declarations that are default constructors.
+///
+/// Given
+/// \code
+///   struct S {
+///     S(); // #1
+///     S(const S &); // #2
+///     S(S &&); // #3
+///   };
+/// \endcode
+/// constructorDecl(isDefaultConstructor()) will match #1, but not #2 or #3.
+AST_MATCHER(CXXConstructorDecl, isDefaultConstructor) {
+  return Node.isDefaultConstructor();
+}
+
+/// \brief Matches constructor and conversion declarations that are marked with
+/// the explicit keyword.
+///
+/// Given
+/// \code
+///   struct S {
+///     S(int); // #1
+///     explicit S(double); // #2
+///     operator int(); // #3
+///     explicit operator bool(); // #4
+///   };
+/// \endcode
+/// constructorDecl(isExplicit()) will match #2, but not #1.
+/// conversionDecl(isExplicit()) will match #4, but not #3.
+AST_POLYMORPHIC_MATCHER(isExplicit,
+                        AST_POLYMORPHIC_SUPPORTED_TYPES(CXXConstructorDecl,
+                                                        CXXConversionDecl)) {
+  return Node.isExplicit();
+
+}
+
 /// \brief If the given case statement does not use the GNU case range
 /// extension, matches the constant given in the statement.
 ///
@@ -4077,7 +4236,8 @@ AST_MATCHER_P(CaseStmt, hasCaseConstant, internal::Matcher<Expr>,
 ///   __attribute__((device)) void f() { ... }
 /// \endcode
 /// decl(hasAttr(clang::attr::CUDADevice)) matches the function declaration of
-/// f.
+/// f. If the matcher is use from clang-query, attr::Kind parameter should be
+/// passed as a quoted string. e.g., hasAttr("attr::CUDADevice").
 AST_MATCHER_P(Decl, hasAttr, attr::Kind, AttrKind) {
   for (const auto *Attr : Node.attrs()) {
     if (Attr->getKind() == AttrKind)

@@ -989,7 +989,7 @@ TemplateInstantiator::RebuildElaboratedType(SourceLocation KeywordLoc,
     if (Id && Keyword != ETK_None && Keyword != ETK_Typename) {
       TagTypeKind Kind = TypeWithKeyword::getTagTypeKindForKeyword(Keyword);
       if (!SemaRef.isAcceptableTagRedeclaration(TD, Kind, /*isDefinition*/false,
-                                                TagLocation, *Id)) {
+                                                TagLocation, Id)) {
         SemaRef.Diag(TagLocation, diag::err_use_with_wrong_tag)
           << Id
           << FixItHint::CreateReplacement(SourceRange(TagLocation),
@@ -2050,7 +2050,7 @@ Sema::InstantiateClass(SourceLocation PointOfInstantiation,
 
   // Default arguments are parsed, if not instantiated. We can go instantiate
   // default arg exprs for default constructors if necessary now.
-  ActOnFinishCXXMemberDefaultArgs(Instantiation);
+  ActOnFinishCXXNonNestedClass(Instantiation);
 
   // Instantiate late parsed attributes, and attach them to their decls.
   // See Sema::InstantiateAttrs

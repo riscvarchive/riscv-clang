@@ -432,11 +432,10 @@ static bool checkRecordTypeForCapability(Sema &S, QualType Ty) {
   // Else check if any base classes have a capability.
   if (CXXRecordDecl *CRD = dyn_cast<CXXRecordDecl>(RD)) {
     CXXBasePaths BPaths(false, false);
-    if (CRD->lookupInBases([](const CXXBaseSpecifier *BS, CXXBasePath &P,
-      void *) {
-      return BS->getType()->getAs<RecordType>()
-        ->getDecl()->hasAttr<CapabilityAttr>();
-    }, nullptr, BPaths))
+    if (CRD->lookupInBases([](const CXXBaseSpecifier *BS, CXXBasePath &) {
+          const auto *Type = BS->getType()->getAs<RecordType>();
+          return Type->getDecl()->hasAttr<CapabilityAttr>();
+        }, BPaths))
       return true;
   }
   return false;
@@ -2492,17 +2491,17 @@ static void handleFormatArgAttr(Sema &S, Decl *D, const AttributeList &Attr) {
   if (!checkFunctionOrMethodParameterIndex(S, D, Attr, 1, IdxExpr, Idx))
     return;
 
-  // make sure the format string is really a string
+  // Make sure the format string is really a string.
   QualType Ty = getFunctionOrMethodParamType(D, Idx);
 
-  bool not_nsstring_type = !isNSStringType(Ty, S.Context);
-  if (not_nsstring_type &&
+  bool NotNSStringTy = !isNSStringType(Ty, S.Context);
+  if (NotNSStringTy &&
       !isCFStringType(Ty, S.Context) &&
       (!Ty->isPointerType() ||
        !Ty->getAs<PointerType>()->getPointeeType()->isCharType())) {
     S.Diag(Attr.getLoc(), diag::err_format_attribute_not)
-        << (not_nsstring_type ? "a string type" : "an NSString")
-        << IdxExpr->getSourceRange() << getFunctionOrMethodParamRange(D, 0);
+        << "a string type" << IdxExpr->getSourceRange()
+        << getFunctionOrMethodParamRange(D, 0);
     return;
   }
   Ty = getFunctionOrMethodResultType(D);
@@ -2511,7 +2510,7 @@ static void handleFormatArgAttr(Sema &S, Decl *D, const AttributeList &Attr) {
       (!Ty->isPointerType() ||
        !Ty->getAs<PointerType>()->getPointeeType()->isCharType())) {
     S.Diag(Attr.getLoc(), diag::err_format_attribute_result_not)
-        << (not_nsstring_type ? "string type" : "NSString")
+        << (NotNSStringTy ? "string type" : "NSString")
         << IdxExpr->getSourceRange() << getFunctionOrMethodParamRange(D, 0);
     return;
   }
@@ -2858,7 +2857,7 @@ void Sema::AddAlignValueAttr(SourceRange AttrRange, Decl *D, Expr *E,
   }
 
   if (!E->isValueDependent()) {
-    llvm::APSInt Alignment(32);
+    llvm::APSInt Alignment;
     ExprResult ICE
       = VerifyIntegerConstantExpression(E, &Alignment,
           diag::err_align_value_attribute_argument_not_int,
@@ -2972,7 +2971,7 @@ void Sema::AddAlignedAttr(SourceRange AttrRange, Decl *D, Expr *E,
   }
 
   // FIXME: Cache the number on the Attr object?
-  llvm::APSInt Alignment(32);
+  llvm::APSInt Alignment;
   ExprResult ICE
     = VerifyIntegerConstantExpression(E, &Alignment,
         diag::err_aligned_attribute_argument_not_int,
@@ -2980,24 +2979,42 @@ void Sema::AddAlignedAttr(SourceRange AttrRange, Decl *D, Expr *E,
   if (ICE.isInvalid())
     return;
 
+  uint64_t AlignVal = Alignment.getZExtValue();
+
   // C++11 [dcl.align]p2:
   //   -- if the constant expression evaluates to zero, the alignment
   //      specifier shall have no effect
   // C11 6.7.5p6:
   //   An alignment specification of zero has no effect.
-  if (!(TmpAttr.isAlignas() && !Alignment) &&
-      !llvm::isPowerOf2_64(Alignment.getZExtValue())) {
-    Diag(AttrLoc, diag::err_alignment_not_power_of_two)
-      << E->getSourceRange();
-    return;
+  if (!(TmpAttr.isAlignas() && !Alignment)) {
+    if (!llvm::isPowerOf2_64(AlignVal)) {
+      Diag(AttrLoc, diag::err_alignment_not_power_of_two)
+        << E->getSourceRange();
+      return;
+    }
   }
 
   // Alignment calculations can wrap around if it's greater than 2**28.
-  unsigned MaxValidAlignment = TmpAttr.isDeclspec() ? 8192 : 268435456;
-  if (Alignment.getZExtValue() > MaxValidAlignment) {
+  unsigned MaxValidAlignment =
+      Context.getTargetInfo().getTriple().isOSBinFormatCOFF() ? 8192
+                                                              : 268435456;
+  if (AlignVal > MaxValidAlignment) {
     Diag(AttrLoc, diag::err_attribute_aligned_too_great) << MaxValidAlignment
                                                          << E->getSourceRange();
     return;
+  }
+
+  if (Context.getTargetInfo().isTLSSupported()) {
+    unsigned MaxTLSAlign =
+        Context.toCharUnitsFromBits(Context.getTargetInfo().getMaxTLSAlign())
+            .getQuantity();
+    auto *VD = dyn_cast<VarDecl>(D);
+    if (MaxTLSAlign && AlignVal > MaxTLSAlign && VD &&
+        VD->getTLSKind() != VarDecl::TLS_None) {
+      Diag(VD->getLocation(), diag::err_tls_var_aligned_over_maximum)
+          << (unsigned)AlignVal << VD << MaxTLSAlign;
+      return;
+    }
   }
 
   AlignedAttr *AA = ::new (Context) AlignedAttr(AttrRange, Context, true,
@@ -4567,7 +4584,7 @@ static void ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D,
   // which do not apply to the current target architecture are treated as
   // though they were unknown attributes.
   if (Attr.getKind() == AttributeList::UnknownAttribute ||
-      !Attr.existsInTarget(S.Context.getTargetInfo().getTriple())) {
+      !Attr.existsInTarget(S.Context.getTargetInfo())) {
     S.Diag(Attr.getLoc(), Attr.isDeclspecAttribute()
                               ? diag::warn_unhandled_ms_attribute_ignored
                               : diag::warn_unknown_attribute_ignored)
@@ -4706,6 +4723,9 @@ static void ProcessDeclAttribute(Sema &S, Scope *scope, Decl *D,
     break;
   case AttributeList::AT_Mode:
     handleModeAttr(S, D, Attr);
+    break;
+  case AttributeList::AT_NoAlias:
+    handleSimpleAttribute<NoAliasAttr>(S, D, Attr);
     break;
   case AttributeList::AT_NoCommon:
     handleSimpleAttribute<NoCommonAttr>(S, D, Attr);

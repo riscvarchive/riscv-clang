@@ -399,10 +399,15 @@ DeclRefExpr *DeclRefExpr::Create(const ASTContext &Context,
     Size += sizeof(NestedNameSpecifierLoc);
   if (FoundD)
     Size += sizeof(NamedDecl *);
-  if (TemplateArgs)
+  if (TemplateArgs) {
+    Size = llvm::RoundUpToAlignment(Size,
+                                    llvm::alignOf<ASTTemplateKWAndArgsInfo>());
     Size += ASTTemplateKWAndArgsInfo::sizeFor(TemplateArgs->size());
-  else if (TemplateKWLoc.isValid())
+  } else if (TemplateKWLoc.isValid()) {
+    Size = llvm::RoundUpToAlignment(Size,
+                                    llvm::alignOf<ASTTemplateKWAndArgsInfo>());
     Size += ASTTemplateKWAndArgsInfo::sizeFor(0);
+  }
 
   void *Mem = Context.Allocate(Size, llvm::alignOf<DeclRefExpr>());
   return new (Mem) DeclRefExpr(Context, QualifierLoc, TemplateKWLoc, D,
@@ -420,8 +425,11 @@ DeclRefExpr *DeclRefExpr::CreateEmpty(const ASTContext &Context,
     Size += sizeof(NestedNameSpecifierLoc);
   if (HasFoundDecl)
     Size += sizeof(NamedDecl *);
-  if (HasTemplateKWAndArgsInfo)
+  if (HasTemplateKWAndArgsInfo) {
+    Size = llvm::RoundUpToAlignment(Size,
+                                    llvm::alignOf<ASTTemplateKWAndArgsInfo>());
     Size += ASTTemplateKWAndArgsInfo::sizeFor(NumTemplateArgs);
+  }
 
   void *Mem = Context.Allocate(Size, llvm::alignOf<DeclRefExpr>());
   return new (Mem) DeclRefExpr(EmptyShell());
@@ -490,7 +498,6 @@ std::string PredefinedExpr::ComputeName(IdentType IT, const Decl *CurrentDecl) {
         else
           MC->mangleName(ND, Out);
 
-        Out.flush();
         if (!Buffer.empty() && Buffer.front() == '\01')
           return Buffer.substr(1);
         return Buffer.str();
@@ -652,7 +659,6 @@ std::string PredefinedExpr::ComputeName(IdentType IT, const Decl *CurrentDecl) {
 
     Out << Proto;
 
-    Out.flush();
     return Name.str().str();
   }
   if (const CapturedDecl *CD = dyn_cast<CapturedDecl>(CurrentDecl)) {
@@ -684,7 +690,6 @@ std::string PredefinedExpr::ComputeName(IdentType IT, const Decl *CurrentDecl) {
     MD->getSelector().print(Out);
     Out <<  ']';
 
-    Out.flush();
     return Name.str().str();
   }
   if (isa<TranslationUnitDecl>(CurrentDecl) && IT == PrettyFunction) {
@@ -3154,10 +3159,10 @@ bool Expr::HasSideEffects(const ASTContext &Ctx,
   }
 
   // Recurse to children.
-  for (const_child_range SubStmts = children(); SubStmts; ++SubStmts)
-    if (const Stmt *S = *SubStmts)
-      if (cast<Expr>(S)->HasSideEffects(Ctx, IncludePossibleEffects))
-        return true;
+  for (const Stmt *SubStmt : children())
+    if (SubStmt &&
+        cast<Expr>(SubStmt)->HasSideEffects(Ctx, IncludePossibleEffects))
+      return true;
 
   return false;
 }
@@ -3429,6 +3434,18 @@ bool Expr::refersToVectorElement() const {
   return false;
 }
 
+bool Expr::refersToGlobalRegisterVar() const {
+  const Expr *E = this->IgnoreParenImpCasts();
+
+  if (const DeclRefExpr *DRE = dyn_cast<DeclRefExpr>(E))
+    if (const auto *VD = dyn_cast<VarDecl>(DRE->getDecl()))
+      if (VD->getStorageClass() == SC_Register &&
+          VD->hasAttr<AsmLabelAttr>() && !VD->isLocalVarDecl())
+        return true;
+
+  return false;
+}
+
 /// isArrow - Return true if the base expression is a pointer to vector,
 /// return false if the base expression is a vector.
 bool ExtVectorElementExpr::isArrow() const {
@@ -3464,7 +3481,7 @@ bool ExtVectorElementExpr::containsDuplicateElements() const {
 
 /// getEncodedElementAccess - We encode the fields as a llvm ConstantArray.
 void ExtVectorElementExpr::getEncodedElementAccess(
-                                  SmallVectorImpl<unsigned> &Elts) const {
+    SmallVectorImpl<uint32_t> &Elts) const {
   StringRef Comp = Accessor->getName();
   if (Comp[0] == 's' || Comp[0] == 'S')
     Comp = Comp.substr(1);
@@ -3748,6 +3765,16 @@ ObjCInterfaceDecl *ObjCMessageExpr::getReceiverInterface() const {
   return nullptr;
 }
 
+QualType ObjCPropertyRefExpr::getReceiverType(const ASTContext &ctx) const {
+  if (isClassReceiver())
+    return ctx.getObjCInterfaceType(getClassReceiver());
+
+  if (isSuperReceiver())
+    return getSuperReceiverType();
+
+  return getBase()->getType();
+}
+
 StringRef ObjCBridgedCastExpr::getBridgeKindName() const {
   switch (getBridgeKind()) {
   case OBC_Bridge:
@@ -3873,7 +3900,7 @@ DesignatedInitExpr::DesignatedInitExpr(const ASTContext &C, QualType Ty,
   this->Designators = new (C) Designator[NumDesignators];
 
   // Record the initializer itself.
-  child_range Child = children();
+  child_iterator Child = child_begin();
   *Child++ = Init;
 
   // Copy the designators and their subexpressions, computing
@@ -3929,7 +3956,8 @@ DesignatedInitExpr::Create(const ASTContext &C, Designator *Designators,
                            SourceLocation ColonOrEqualLoc,
                            bool UsesColonSyntax, Expr *Init) {
   void *Mem = C.Allocate(sizeof(DesignatedInitExpr) +
-                         sizeof(Stmt *) * (IndexExprs.size() + 1), 8);
+                             sizeof(Stmt *) * (IndexExprs.size() + 1),
+                         llvm::alignOf<DesignatedInitExpr>());
   return new (Mem) DesignatedInitExpr(C, C.VoidTy, NumDesignators, Designators,
                                       ColonOrEqualLoc, UsesColonSyntax,
                                       IndexExprs, Init);
@@ -4144,19 +4172,6 @@ PseudoObjectExpr::PseudoObjectExpr(QualType type, ExprValueKind VK,
 }
 
 //===----------------------------------------------------------------------===//
-//  ExprIterator.
-//===----------------------------------------------------------------------===//
-
-Expr* ExprIterator::operator[](size_t idx) { return cast<Expr>(I[idx]); }
-Expr* ExprIterator::operator*() const { return cast<Expr>(*I); }
-Expr* ExprIterator::operator->() const { return cast<Expr>(*I); }
-const Expr* ConstExprIterator::operator[](size_t idx) const {
-  return cast<Expr>(I[idx]);
-}
-const Expr* ConstExprIterator::operator*() const { return cast<Expr>(*I); }
-const Expr* ConstExprIterator::operator->() const { return cast<Expr>(*I); }
-
-//===----------------------------------------------------------------------===//
 //  Child Iterators for iterating over subexpressions/substatements
 //===----------------------------------------------------------------------===//
 
@@ -4169,7 +4184,7 @@ Stmt::child_range UnaryExprOrTypeTraitExpr::children() {
     if (const VariableArrayType* T = dyn_cast<VariableArrayType>(
                                    getArgumentType().getTypePtr()))
       return child_range(child_iterator(T), child_iterator());
-    return child_range();
+    return child_range(child_iterator(), child_iterator());
   }
   return child_range(&Argument.Ex, &Argument.Ex + 1);
 }
