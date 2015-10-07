@@ -1267,6 +1267,74 @@ void Clang::AddMIPSTargetArgs(const ArgList &Args,
   }
 }
 
+/// RISCV
+//
+static void parseRISCVExtensions(StringRef exts, ArgStringList &CmdArgs) {
+  for(size_t i = 0, e = exts.size(); i < e; i++){
+    char C = exts[i];
+    if(C == 'M') {
+      CmdArgs.push_back("-target-feature");
+      CmdArgs.push_back("+m");
+    } else if(C == 'A') {
+      CmdArgs.push_back("-target-feature");
+      CmdArgs.push_back("+a");
+    } else if(C == 'F') {
+      CmdArgs.push_back("-target-feature");
+      CmdArgs.push_back("+f");
+    } else if(C == 'D') {
+      CmdArgs.push_back("-target-feature");
+      CmdArgs.push_back("+d");
+    }
+  }
+}
+static void getRISCVTargetCPU(const ArgList &Args,
+                              ArgStringList &CmdArgs,
+                                     const llvm::Triple &Triple) {
+  // FIXME: Warn on inconsistent use of -mcpu and -mriscv
+
+  // If we have -mcpu=, use that.
+  if (Arg *A = Args.getLastArg(options::OPT_mcpu_EQ)) {
+    StringRef MCPU = A->getValue();
+    CmdArgs.push_back("-target-cpu");
+    CmdArgs.push_back(Args.MakeArgString(MCPU));
+  }
+
+  StringRef MArch;
+  if (Arg *A = Args.getLastArg(options::OPT_mriscv_EQ)) {
+    // Otherwise, if we have -march= choose the base CPU for that arch.
+    MArch = A->getValue();
+  } else {
+    // Otherwise, use the Arch from the triple.
+    MArch = Triple.getArchName();
+  }
+
+  //feature decoding TODO:make cleaner
+  if(MArch.startswith("RV32")) {
+    CmdArgs.push_back("-target-feature");
+    CmdArgs.push_back("+rv32");
+    CmdArgs.push_back("-target-feature");
+    CmdArgs.push_back("-rv64");
+    parseRISCVExtensions(MArch.drop_front(4), CmdArgs);
+  }else if(MArch.startswith("RV64")) {
+    CmdArgs.push_back("-target-feature");
+    CmdArgs.push_back("+rv64");
+    parseRISCVExtensions(MArch.drop_front(4), CmdArgs);
+  }else{
+    //default to RV64I
+    CmdArgs.push_back("-target-feature");
+    CmdArgs.push_back("+rv64");
+  }
+}
+
+void Clang::AddRISCVTargetArgs(const ArgList &Args,
+                              ArgStringList &CmdArgs) const {
+  llvm::Triple Triple = getToolChain().getTriple();
+
+  // Set the CPU based on -march= and -mcpu=.
+  getRISCVTargetCPU(Args, CmdArgs, Triple);
+}
+//End RISCV
+
 /// getPPCTargetCPU - Get the (LLVM) name of the PowerPC cpu we are targeting.
 static std::string getPPCTargetCPU(const ArgList &Args) {
   if (Arg *A = Args.getLastArg(options::OPT_mcpu_EQ)) {
@@ -3573,6 +3641,11 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   case llvm::Triple::ppc64:
   case llvm::Triple::ppc64le:
     AddPPCTargetArgs(Args, CmdArgs);
+    break;
+
+  case llvm::Triple::riscv:
+  case llvm::Triple::riscv64:
+    AddRISCVTargetArgs(Args, CmdArgs);
     break;
 
   case llvm::Triple::sparc:
@@ -8077,6 +8150,10 @@ static const char *getLDMOption(const llvm::Triple &T, const ArgList &Args) {
     if (mips::hasMipsAbiArg(Args, "n32"))
       return "elf32ltsmipn32";
     return "elf64ltsmip";
+  case llvm::Triple::riscv:
+      return "elf32lriscv";
+  case llvm::Triple::riscv64:
+      return "elf64lriscv";
   case llvm::Triple::systemz:
     return "elf64_s390";
   case llvm::Triple::x86_64:

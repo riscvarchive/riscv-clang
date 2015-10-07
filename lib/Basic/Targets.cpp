@@ -5693,6 +5693,286 @@ public:
   }
 };
 
+//RISCV target info
+namespace {
+  class RISCVTargetInfo : public TargetInfo {
+    static const char *const GCCRegNames[];
+    std::string CPU;
+
+  public:
+    RISCVTargetInfo(const llvm::Triple &triple) : TargetInfo(triple) {
+      TLSSupported = true;
+      IntWidth = IntAlign = 32;
+      LongLongWidth = LongLongAlign = 64;
+      FloatWidth = FloatAlign = 32;
+      DoubleWidth = DoubleAlign = 64;
+      DoubleFormat = &llvm::APFloat::IEEEdouble;
+      LongDoubleWidth = LongDoubleAlign = 64;
+      LongDoubleFormat = &llvm::APFloat::IEEEdouble;
+      MinGlobalAlign = 8;
+      MaxAtomicPromoteWidth = MaxAtomicInlineWidth = 32;
+    }
+    bool setCPU(const std::string &Name) override {
+      CPU = Name;
+      return true;
+    }
+    void getTargetDefines(const LangOptions &Opts,
+			  MacroBuilder &Builder) const override {
+      // Target identification
+      Builder.defineMacro("__riscv");
+      Builder.defineMacro("__riscv__");
+
+      // Target properties
+      Builder.defineMacro("_RISCV_SZPTR", Twine((int)PointerWidth));
+    }
+    void getTargetBuiltins(const Builtin::Info *&Records,
+			   unsigned &NumRecords) const override {
+      // TODO: Implement.
+      Records = 0;
+      NumRecords = 0;
+    }
+    void getDefaultFeatures(llvm::StringMap<bool> &Features) const override {
+      if (CPU.find("RV32") == 0){
+          setFeatureEnabled(Features, "rv32", true);
+      }else if(CPU.find("RV64") == 0){
+          setFeatureEnabled(Features, "rv64", true);
+      }
+      if(CPU.find("M") != std::string::npos)
+        setFeatureEnabled(Features, "m", true);
+      if(CPU.find("A") != std::string::npos)
+        setFeatureEnabled(Features, "a", true);
+      if(CPU.find("F") != std::string::npos)
+        setFeatureEnabled(Features, "f", true);
+      if(CPU.find("D") != std::string::npos)
+        setFeatureEnabled(Features, "d", true);
+    }
+
+    void getGCCRegNames(const char *const *&Names,
+			unsigned &NumNames) const override;
+    void getGCCRegAliases(const GCCRegAlias *&Aliases,
+                                  unsigned &NumAliases) const override {
+      static const TargetInfo::GCCRegAlias GCCRegAliases[] = {
+	{ { "zero" },    "x0" },
+	{ { "ra" },      "x1" },
+	{ { "s0","fp" }, "x2" },
+	{ { "s1" },      "x3" },
+	{ { "s2" },      "x4" },
+	{ { "s3" },      "x5" },
+	{ { "s4" },      "x6" },
+	{ { "s5" },      "x7" },
+	{ { "s6" },      "x8" },
+	{ { "s7" },      "x9" },
+	{ { "s8" },      "x10" },
+	{ { "s9" },      "x11" },
+	{ { "s10"},      "x12" },
+	{ { "s11"},      "x13" },
+	{ { "sp" },      "x14" },
+	{ { "tp" },      "x15" },
+	{ { "v0" },      "x16" },
+	{ { "v1" },      "x17" },
+	{ { "a0" },      "x18" },
+	{ { "a1" },      "x19" },
+	{ { "a2" },      "x20" },
+	{ { "a3" },      "x21" },
+	{ { "a4" },      "x22" },
+	{ { "a5" },      "x23" },
+	{ { "a6" },      "x24" },
+	{ { "a7" },      "x25" },
+	{ { "a8" },      "x26" },
+	{ { "a9" },      "x27" },
+	{ { "a10"},      "x28" },
+	{ { "a11"},      "x29" },
+	{ { "a12"},      "x30" },
+	{ { "a13"},      "x31" },
+	//FP
+	{ { "fs0" }, "f0" },
+	{ { "fs1" }, "f1" },
+	{ { "fs2" }, "f2" },
+	{ { "fs3" }, "f3" },
+	{ { "fs4" }, "f4" },
+	{ { "fs5" }, "f5" },
+	{ { "fs6" }, "f6" },
+	{ { "fs7" }, "f7" },
+	{ { "fs8" }, "f8" },
+	{ { "fs9" }, "f9" },
+	{ { "fs10"}, "f10" },
+	{ { "fs11"}, "f11" },
+	{ { "fs12"}, "f12" },
+	{ { "fs13"}, "f13" },
+	{ { "fs14"}, "f14" },
+	{ { "fs15"}, "f15" },
+	{ { "fv0" }, "f16" },
+	{ { "fv1" }, "f17" },
+	{ { "fa0" }, "f18" },
+	{ { "fa1" }, "f19" },
+	{ { "fa2" }, "f20" },
+	{ { "fa3" }, "f21" },
+	{ { "fa4" }, "f22" },
+	{ { "fa5" }, "f23" },
+	{ { "fa6" }, "f24" },
+	{ { "fa7" }, "f25" },
+	{ { "fa8" }, "f26" },
+	{ { "fa9" }, "f27" },
+	{ { "fa10"}, "f28" },
+	{ { "fa11"}, "f29" },
+	{ { "fa12"}, "f30" },
+	{ { "fa13"}, "f31" },
+	//PCR
+	{ { "sup0","k0" }, "cr0" },
+	{ { "sup0","k1" }, "cr1" },
+	{ { "epc" }, "cr2" },
+	{ { "badvaddr" }, "cr3" },
+	{ { "ptbr" }, "cr4" },
+	{ { "asid" }, "cr5" },
+	{ { "count" }, "cr6" },
+	{ { "compare" }, "cr7" },
+	{ { "evec" }, "cr8" },
+	{ { "cause" }, "cr9" },
+	{ { "status"}, "cr10" },
+	{ { "hartid"}, "cr11" },
+	{ { "impl"}, "cr12" },
+	{ { "fatc"}, "cr13" },
+	{ { "send_ipi"}, "cr14" },
+	{ { "recv_ipi"}, "cr15" },
+	{ { "pcr0" }, "cr16" },
+	{ { "pcr1" }, "cr17" },
+	{ { "pcr2" }, "cr18" },
+	{ { "pcr3" }, "cr19" },
+	{ { "pcr4" }, "cr20" },
+	{ { "pcr5" }, "cr21" },
+	{ { "pcr6" }, "cr22" },
+	{ { "pcr7" }, "cr23" },
+	{ { "pcr8" }, "cr24" },
+	{ { "pcr9" }, "cr25" },
+	{ { "pcr10" }, "cr26" },
+	{ { "pcr11" }, "cr27" },
+	{ { "pcr12"}, "cr28" },
+	{ { "pcr13"}, "cr29" },
+	{ { "tohost"}, "cr30" },
+	{ { "fromhost"}, "cr31" }
+      };
+
+      Aliases = GCCRegAliases;
+      NumAliases = llvm::array_lengthof(GCCRegAliases);
+    }
+    void setFeatureEnabled(llvm::StringMap<bool> &Features,
+			   StringRef Name,
+			   bool Enabled) const override {
+      if (Name == "m" || Name == "a" || Name == "f" ||
+	  Name == "d" || Name == "rv32" || Name == "rv64") { 
+	Features[Name] = Enabled;
+      }
+    }
+    bool handleTargetFeatures(std::vector<std::string> &Features,
+			      DiagnosticsEngine &Diags) override {
+      return true;
+    }
+    bool validateAsmConstraint(const char *&Name,
+			       TargetInfo::ConstraintInfo &info) const override;
+    const char *getClobbers() const override {
+      // FIXME: Implement!
+      return "";
+    }
+    BuiltinVaListKind getBuiltinVaListKind() const override {
+      return TargetInfo::VoidPtrBuiltinVaList;
+    }
+  };
+
+  const char *const RISCVTargetInfo::GCCRegNames[] = {
+    "x0"  ,  "x1" ,  "x2"  , "x3"  , "x4"  , "x5"  , "x6"  , "x7"  ,
+    "x8"  ,  "x9" ,  "x10" , "x11" , "x12" , "x13" , "x14" , "x15" ,
+    "x16" , "x17" ,  "x18" , "x19" , "x20" , "x21" , "x22" , "x23" ,
+    "x24" , "x25" ,  "x26" , "x27" , "x28" , "x29" , "x30" , "x31" ,
+    "f0"  , "f1"  ,  "f2"  , "f3"  , "f4"  , "f5"  , "f6"  , "f7"  ,
+    "f8"  , "f9"  ,  "f10" , "f11" , "f12" , "f13" , "f14" , "f15" ,
+    "f16" , "f17" ,  "f18" , "f19" , "f20" , "f21" , "f22" , "f23" ,
+    "f24" , "f25" ,  "f26" , "f27" , "f28" , "f29" , "f30" , "f31" ,
+    "cr0" , "cr1" ,  "cr2" , "cr3" , "cr4" , "cr5" , "cr6" , "cr7" ,
+    "cr8" , "cr9" ,  "cr10", "cr11", "cr12", "cr13", "cr14", "cr15",
+    "cr16", "cr17",  "cr18", "cr19", "cr20", "cr21", "cr22", "cr23",
+    "cr24", "cr25",  "cr26", "cr27", "cr28", "cr29", "cr30", "cr31"
+  };
+
+  void RISCVTargetInfo::getGCCRegNames(const char *const *&Names,
+                                         unsigned &NumNames) const {
+    Names = GCCRegNames;
+    NumNames = llvm::array_lengthof(GCCRegNames);
+  }
+
+  bool RISCVTargetInfo::
+  validateAsmConstraint(const char *&Name,
+                        TargetInfo::ConstraintInfo &Info) const {
+    switch (*Name) {
+    default:
+      return false;
+
+    //Full Listing from riscv-gcc/gcc/config/riscv/constraints.md
+    //A -vector integer reg
+    //B -vector float reg
+    //d -equivalent to r
+    //f -float reg
+    //h -not supported
+    //b -internal (all regs)
+    //j -internal (v1_reg)
+    //z -float condition code reg (gr_regs)
+    //Z -internal (constant 1?)
+    //I -I-type signed 12bit immediate
+    //J -integer zero (constant 0)
+    //G -float zero 
+    //Q -internal (const_arith_operand)
+    //YR-an address that is held in a gpr
+    //R -an address that can be used in a non-macro load store
+    //S -internal - a constant call adress
+    //T -internal - a constant mover_operand
+    //W -internal - a mem address based on a base reg
+    //YG-internal - a vector zero
+    //
+    //For generic constraints see gccs simple constraints doc
+
+    case 'r': // CPU register
+    case 'd': // Data register (equivalent to 'r')
+    case 'f': // Floating-point register
+      Info.setAllowsRegister();
+      return true;
+
+    case 'I': // signed 12-bit constant
+    case 'J': // constant zero
+      return true;
+
+    case 'R': // an address that can be used in a non-mcaro load or store
+      Info.setAllowsMemory();
+      return true;
+    }
+  }
+  class RISCV32TargetInfo : public RISCVTargetInfo {
+  public:
+    RISCV32TargetInfo(const llvm::Triple &Triple) : RISCVTargetInfo(Triple) {
+      DescriptionString = ("e-m:e-p:32:32:32-i1:8:16-i8:8:16-i16:16-i32:32-f32:32-f64:64-f80:128-f128:128-n32");
+	    PointerWidth = PointerAlign = 32;
+	    LongWidth = LongAlign = 32;
+    }
+    void getTargetDefines(const LangOptions &Opts,
+                          MacroBuilder &Builder) const override {
+      RISCVTargetInfo::getTargetDefines(Opts, Builder);
+    }
+  };
+
+  class RISCV64TargetInfo : public RISCVTargetInfo {
+  public:
+    RISCV64TargetInfo(const llvm::Triple &Triple) : RISCVTargetInfo(Triple) {
+      DescriptionString = ("e-m:e-i1:8:16-i8:8:16-i64:64-f80:128-n32:64");
+	    PointerWidth = PointerAlign = 64;
+	    LongWidth = LongAlign = 64;
+    }
+    void getTargetDefines(const LangOptions &Opts,
+                          MacroBuilder &Builder) const override {
+      RISCVTargetInfo::getTargetDefines(Opts, Builder);
+      Builder.defineMacro("__riscv64");
+    }
+  };
+}//end RISCV target info
+
+
 class SystemZTargetInfo : public TargetInfo {
   static const Builtin::Info BuiltinInfo[];
   static const char *const GCCRegNames[];
@@ -7254,6 +7534,21 @@ static TargetInfo *AllocateTarget(const llvm::Triple &Triple) {
       return new FreeBSDTargetInfo<SparcV9TargetInfo>(Triple);
     default:
       return new SparcV9TargetInfo(Triple);
+    }
+
+  case llvm::Triple::riscv:
+    switch (os) {
+    case llvm::Triple::Linux:
+      return new LinuxTargetInfo<RISCV32TargetInfo>(Triple);
+    default:
+      return new RISCV32TargetInfo(Triple);
+    }
+  case llvm::Triple::riscv64:
+    switch (os) {
+    case llvm::Triple::Linux:
+      return new LinuxTargetInfo<RISCV64TargetInfo>(Triple);
+    default:
+      return new RISCV64TargetInfo(Triple);
     }
 
   case llvm::Triple::systemz:

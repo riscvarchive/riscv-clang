@@ -71,6 +71,8 @@ SmallString<128> getCompilerRT(const ToolChain &TC, StringRef Component,
                           llvm::opt::ArgStringList &CmdArgs) const;
     void AddR600TargetArgs(const llvm::opt::ArgList &Args,
                            llvm::opt::ArgStringList &CmdArgs) const;
+    void AddRISCVTargetArgs(const llvm::opt::ArgList &Args,
+                           llvm::opt::ArgStringList &CmdArgs) const;
     void AddSparcTargetArgs(const llvm::opt::ArgList &Args,
                             llvm::opt::ArgStringList &CmdArgs) const;
     void AddSystemZTargetArgs(const llvm::opt::ArgList &Args,

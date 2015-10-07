@@ -5197,6 +5197,201 @@ void NVPTXTargetCodeGenInfo::addNVVMMetadata(llvm::Function *F, StringRef Name,
 }
 
 //===----------------------------------------------------------------------===//
+// RISCV ABI Implementation
+//===----------------------------------------------------------------------===//
+
+namespace {
+
+class RISCVABIInfo : public ABIInfo {
+  static const unsigned MinABIStackAlignInBytes = 4;
+public:
+  RISCVABIInfo(CodeGenTypes &CGT) : ABIInfo(CGT) {}
+
+
+  bool isPromotableIntegerType(QualType Ty) const;
+  bool isCompoundType(QualType Ty) const;
+  bool isFPArgumentType(QualType Ty) const;
+
+  ABIArgInfo classifyReturnType(QualType RetTy) const;
+  ABIArgInfo classifyArgumentType(QualType ArgTy) const;
+
+  virtual void computeInfo(CGFunctionInfo &FI) const {
+    FI.getReturnInfo() = classifyReturnType(FI.getReturnType());
+    for (CGFunctionInfo::arg_iterator it = FI.arg_begin(), ie = FI.arg_end();
+         it != ie; ++it)
+      it->info = classifyArgumentType(it->type);
+  }
+
+  virtual llvm::Value *EmitVAArg(llvm::Value *VAListAddr, QualType Ty,
+                                 CodeGenFunction &CGF) const;
+};
+
+class RISCVTargetCodeGenInfo : public TargetCodeGenInfo {
+public:
+  RISCVTargetCodeGenInfo(CodeGenTypes &CGT)
+    : TargetCodeGenInfo(new RISCVABIInfo(CGT)) {}
+};
+
+}
+
+bool RISCVABIInfo::isCompoundType(QualType Ty) const {
+  return Ty->isAnyComplexType() || isAggregateTypeForABI(Ty);
+}
+
+bool RISCVABIInfo::isFPArgumentType(QualType Ty) const {
+  if (const BuiltinType *BT = Ty->getAs<BuiltinType>())
+    switch (BT->getKind()) {
+    case BuiltinType::Float:
+    case BuiltinType::Double:
+      return true;
+    default:
+      return false;
+    }
+
+  if (const RecordType *RT = Ty->getAsStructureType()) {
+    const RecordDecl *RD = RT->getDecl();
+    bool Found = false;
+
+    // If this is a C++ record, check the bases first.
+    if (const CXXRecordDecl *CXXRD = dyn_cast<CXXRecordDecl>(RD))
+      for (CXXRecordDecl::base_class_const_iterator I = CXXRD->bases_begin(),
+             E = CXXRD->bases_end(); I != E; ++I) {
+        QualType Base = I->getType();
+
+        // Empty bases don't affect things either way.
+        if (isEmptyRecord(getContext(), Base, true))
+          continue;
+
+        if (Found)
+          return false;
+        Found = isFPArgumentType(Base);
+        if (!Found)
+          return false;
+      }
+
+    // Check the fields.
+    for (RecordDecl::field_iterator I = RD->field_begin(),
+           E = RD->field_end(); I != E; ++I) {
+      const FieldDecl *FD = *I;
+
+      // Empty bitfields don't affect things either way.
+      // Unlike isSingleElementStruct(), empty structure and array fields
+      // do count.  So do anonymous bitfields that aren't zero-sized.
+      if (FD->isBitField() && FD->getBitWidthValue(getContext()) == 0)
+        return true;
+
+      // Unlike isSingleElementStruct(), arrays do not count.
+      // Nested isFPArgumentType structures still do though.
+      if (Found)
+        return false;
+      Found = isFPArgumentType(FD->getType());
+      if (!Found)
+        return false;
+    }
+
+    // Unlike isSingleElementStruct(), trailing padding is allowed.
+    // An 8-byte aligned struct s { float f; } is passed as a double.
+    return Found;
+  }
+
+  return false;
+}
+
+//TODO:Copy from Mips without review/edits
+llvm::Value *RISCVABIInfo::EmitVAArg(llvm::Value *VAListAddr, QualType Ty,
+                                       CodeGenFunction &CGF) const {
+  llvm::Type *BP = CGF.Int8PtrTy;
+  llvm::Type *BPP = CGF.Int8PtrPtrTy;
+ 
+  CGBuilderTy &Builder = CGF.Builder;
+  llvm::Value *VAListAddrAsBPP = Builder.CreateBitCast(VAListAddr, BPP, "ap");
+  llvm::Value *Addr = Builder.CreateLoad(VAListAddrAsBPP, "ap.cur");
+  int64_t TypeAlign = getContext().getTypeAlign(Ty) / 8;
+  llvm::Type *PTy = llvm::PointerType::getUnqual(CGF.ConvertType(Ty));
+  llvm::Value *AddrTyped;
+  unsigned PtrWidth = getTarget().getPointerWidth(0);
+  llvm::IntegerType *IntTy = (PtrWidth == 32) ? CGF.Int32Ty : CGF.Int64Ty;
+
+  if (TypeAlign > MinABIStackAlignInBytes) {
+    llvm::Value *AddrAsInt = CGF.Builder.CreatePtrToInt(Addr, IntTy);
+    llvm::Value *Inc = llvm::ConstantInt::get(IntTy, TypeAlign - 1);
+    llvm::Value *Mask = llvm::ConstantInt::get(IntTy, -TypeAlign);
+    llvm::Value *Add = CGF.Builder.CreateAdd(AddrAsInt, Inc);
+    llvm::Value *And = CGF.Builder.CreateAnd(Add, Mask);
+    AddrTyped = CGF.Builder.CreateIntToPtr(And, PTy);
+  }
+  else
+    AddrTyped = Builder.CreateBitCast(Addr, PTy);  
+
+  llvm::Value *AlignedAddr = Builder.CreateBitCast(AddrTyped, BP);
+  TypeAlign = std::max((unsigned)TypeAlign, (unsigned) 8);//4===MinABIStackAlignInBytes
+  uint64_t Offset =
+    llvm::RoundUpToAlignment(CGF.getContext().getTypeSize(Ty) / 8, TypeAlign);
+  llvm::Value *NextAddr =
+    Builder.CreateGEP(AlignedAddr, llvm::ConstantInt::get(IntTy, Offset),
+                      "ap.next");
+  Builder.CreateStore(NextAddr, VAListAddrAsBPP);
+  
+  return AddrTyped;
+}
+
+
+ABIArgInfo RISCVABIInfo::classifyReturnType(QualType RetTy) const {
+  uint64_t Size = getContext().getTypeSize(RetTy);
+
+  if (RetTy->isVoidType() || Size == 0)
+    return ABIArgInfo::getIgnore();
+
+  //All types that fit in two words are passed directly
+  if (Size <= 64) 
+    return (RetTy->isPromotableIntegerType() ?
+            ABIArgInfo::getExtend() : ABIArgInfo::getDirect());
+
+  return ABIArgInfo::getIndirect(0);
+}
+
+ABIArgInfo RISCVABIInfo::classifyArgumentType(QualType Ty) const {
+  // Handle the generic C++ ABI.
+  if (CGCXXABI::RecordArgABI RAA = getRecordArgABI(Ty, getCXXABI()))
+    return ABIArgInfo::getIndirect(1, RAA == CGCXXABI::RAA_DirectInMemory);
+
+  // Values that are not less than two words are passed indirectly
+  uint64_t Size = getContext().getTypeSize(Ty);
+  if (Size > 64)
+    return ABIArgInfo::getIndirect(0);
+
+  // Handle small structures.
+  if (const RecordType *RT = Ty->getAs<RecordType>()) {
+    // Structures with flexible arrays have variable length, so really
+    // fail the size test above.
+    const RecordDecl *RD = RT->getDecl();
+    if (RD->hasFlexibleArrayMember())
+      return ABIArgInfo::getIndirect(0);
+
+    // The structure is passed as an unextended integer, a float, or a double.
+    llvm::Type *PassTy;
+    if (isFPArgumentType(Ty)) {
+      assert(Size == 32 || Size == 64);
+      if (Size == 32)
+        PassTy = llvm::Type::getFloatTy(getVMContext());
+      else
+        PassTy = llvm::Type::getDoubleTy(getVMContext());
+    } else{
+      if(Size == 0)
+        return ABIArgInfo::getIgnore();//ignore empty args
+      PassTy = llvm::IntegerType::get(getVMContext(), Size);
+    }
+    return ABIArgInfo::getDirect(PassTy);
+  }
+
+  // Non-structure compounds are passed indirectly.
+  if (isCompoundType(Ty))
+    return ABIArgInfo::getIndirect(0);
+
+  return ABIArgInfo::getDirect(0);
+}
+
+//===----------------------------------------------------------------------===//
 // SystemZ ABI Implementation
 //===----------------------------------------------------------------------===//
 
