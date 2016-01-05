@@ -25,6 +25,7 @@
 
 namespace clang {
 
+enum BuiltinTemplateKind : int;
 class TemplateParameterList;
 class TemplateDecl;
 class RedeclarableTemplateDecl;
@@ -44,7 +45,7 @@ typedef llvm::PointerUnion3<TemplateTypeParmDecl*, NonTypeTemplateParmDecl*,
 
 /// \brief Stores a list of template parameters for a TemplateDecl and its
 /// derived classes.
-class LLVM_ALIGNAS(/*alignof(void*)*/ LLVM_PTR_SIZE) TemplateParameterList final
+class TemplateParameterList final
     : private llvm::TrailingObjects<TemplateParameterList, NamedDecl *> {
 
   /// The location of the 'template' keyword.
@@ -67,15 +68,13 @@ protected:
   }
 
   TemplateParameterList(SourceLocation TemplateLoc, SourceLocation LAngleLoc,
-                        NamedDecl **Params, unsigned NumParams,
-                        SourceLocation RAngleLoc);
+                        ArrayRef<NamedDecl *> Params, SourceLocation RAngleLoc);
 
 public:
   static TemplateParameterList *Create(const ASTContext &C,
                                        SourceLocation TemplateLoc,
                                        SourceLocation LAngleLoc,
-                                       NamedDecl **Params,
-                                       unsigned NumParams,
+                                       ArrayRef<NamedDecl *> Params,
                                        SourceLocation RAngleLoc);
 
   /// \brief Iterates through the template parameters in this list.
@@ -154,9 +153,9 @@ template <size_t N> class FixedSizeTemplateParameterListStorage {
 public:
   FixedSizeTemplateParameterListStorage(SourceLocation TemplateLoc,
                                         SourceLocation LAngleLoc,
-                                        NamedDecl **Params,
+                                        ArrayRef<NamedDecl *> Params,
                                         SourceLocation RAngleLoc)
-      : List(TemplateLoc, LAngleLoc, Params, N, RAngleLoc) {
+      : List(TemplateLoc, LAngleLoc, Params, RAngleLoc) {
     // Because we're doing an evil layout hack above, have some
     // asserts, just to double-check everything is laid out like
     // expected.
@@ -170,7 +169,7 @@ public:
 };
 
 /// \brief A template argument list.
-class LLVM_ALIGNAS(/*alignof(uint64_t)*/ 8) TemplateArgumentList final
+class TemplateArgumentList final
     : private llvm::TrailingObjects<TemplateArgumentList, TemplateArgument> {
   /// \brief The template argument list.
   const TemplateArgument *Arguments;
@@ -447,17 +446,8 @@ public:
   /// explicit instantiation declaration, or explicit instantiation
   /// definition.
   bool isExplicitInstantiationOrSpecialization() const {
-    switch (getTemplateSpecializationKind()) {
-    case TSK_ExplicitSpecialization:
-    case TSK_ExplicitInstantiationDeclaration:
-    case TSK_ExplicitInstantiationDefinition:
-      return true;
-
-    case TSK_Undeclared:
-    case TSK_ImplicitInstantiation:
-      return false;
-    }
-    llvm_unreachable("bad template specialization kind");
+    return isTemplateExplicitInstantiationOrSpecialization(
+        getTemplateSpecializationKind());
   }
 
   /// \brief Set the template specialization kind.
@@ -563,8 +553,7 @@ public:
 ///     friend void foo<>(T);
 ///   };
 /// \endcode
-class LLVM_ALIGNAS(/*alignof(uint64_t)*/ 8)
-    DependentFunctionTemplateSpecializationInfo final
+class DependentFunctionTemplateSpecializationInfo final
     : private llvm::TrailingObjects<DependentFunctionTemplateSpecializationInfo,
                                     TemplateArgumentLoc,
                                     FunctionTemplateDecl *> {
@@ -946,7 +935,7 @@ public:
     return const_cast<FunctionTemplateDecl*>(this)->getMostRecentDecl();
   }
 
-  FunctionTemplateDecl *getInstantiatedFromMemberTemplate() {
+  FunctionTemplateDecl *getInstantiatedFromMemberTemplate() const {
     return cast_or_null<FunctionTemplateDecl>(
              RedeclarableTemplateDecl::getInstantiatedFromMemberTemplate());
   }
@@ -1490,6 +1479,35 @@ public:
   friend TrailingObjects;
 };
 
+/// \brief Represents the builtin template declaration which is used to
+/// implement __make_integer_seq.  It serves no real purpose beyond existing as
+/// a place to hold template parameters.
+class BuiltinTemplateDecl : public TemplateDecl {
+  void anchor() override;
+
+  BuiltinTemplateDecl(const ASTContext &C, DeclContext *DC,
+                      DeclarationName Name, BuiltinTemplateKind BTK);
+
+  BuiltinTemplateKind BTK;
+
+public:
+  // Implement isa/cast/dyncast support
+  static bool classof(const Decl *D) { return classofKind(D->getKind()); }
+  static bool classofKind(Kind K) { return K == BuiltinTemplate; }
+
+  static BuiltinTemplateDecl *Create(const ASTContext &C, DeclContext *DC,
+                                     DeclarationName Name,
+                                     BuiltinTemplateKind BTK) {
+    return new (C, DC) BuiltinTemplateDecl(C, DC, Name, BTK);
+  }
+
+  SourceRange getSourceRange() const override LLVM_READONLY {
+    return SourceRange();
+  }
+
+  BuiltinTemplateKind getBuiltinTemplateKind() const { return BTK; }
+};
+
 /// \brief Represents a class template specialization, which refers to
 /// a class template with a given set of template arguments.
 ///
@@ -1614,17 +1632,8 @@ public:
   /// explicit instantiation declaration, or explicit instantiation
   /// definition.
   bool isExplicitInstantiationOrSpecialization() const {
-    switch (getTemplateSpecializationKind()) {
-    case TSK_ExplicitSpecialization:
-    case TSK_ExplicitInstantiationDeclaration:
-    case TSK_ExplicitInstantiationDefinition:
-      return true;
-
-    case TSK_Undeclared:
-    case TSK_ImplicitInstantiation:
-      return false;
-    }
-    llvm_unreachable("bad template specialization kind");
+    return isTemplateExplicitInstantiationOrSpecialization(
+        getTemplateSpecializationKind());
   }
 
   void setSpecializationKind(TemplateSpecializationKind TSK) {
@@ -1853,8 +1862,8 @@ public:
   /// template partial specialization \c Outer<T>::Inner<U*>. Given
   /// \c Outer<float>::Inner<U*>, this function would return
   /// \c Outer<T>::Inner<U*>.
-  ClassTemplatePartialSpecializationDecl *getInstantiatedFromMember() {
-    ClassTemplatePartialSpecializationDecl *First =
+  ClassTemplatePartialSpecializationDecl *getInstantiatedFromMember() const {
+    const ClassTemplatePartialSpecializationDecl *First =
         cast<ClassTemplatePartialSpecializationDecl>(getFirstDecl());
     return First->InstantiatedFromMember.getPointer();
   }
@@ -2034,7 +2043,7 @@ public:
     return const_cast<ClassTemplateDecl*>(this)->getMostRecentDecl();
   }
 
-  ClassTemplateDecl *getInstantiatedFromMemberTemplate() {
+  ClassTemplateDecl *getInstantiatedFromMemberTemplate() const {
     return cast_or_null<ClassTemplateDecl>(
              RedeclarableTemplateDecl::getInstantiatedFromMemberTemplate());
   }
@@ -2264,7 +2273,7 @@ public:
                this)->getPreviousDecl());
   }
 
-  TypeAliasTemplateDecl *getInstantiatedFromMemberTemplate() {
+  TypeAliasTemplateDecl *getInstantiatedFromMemberTemplate() const {
     return cast_or_null<TypeAliasTemplateDecl>(
              RedeclarableTemplateDecl::getInstantiatedFromMemberTemplate());
   }
@@ -2469,17 +2478,8 @@ public:
   /// explicit instantiation declaration, or explicit instantiation
   /// definition.
   bool isExplicitInstantiationOrSpecialization() const {
-    switch (getTemplateSpecializationKind()) {
-    case TSK_ExplicitSpecialization:
-    case TSK_ExplicitInstantiationDeclaration:
-    case TSK_ExplicitInstantiationDefinition:
-      return true;
-
-    case TSK_Undeclared:
-    case TSK_ImplicitInstantiation:
-      return false;
-    }
-    llvm_unreachable("bad template specialization kind");
+    return isTemplateExplicitInstantiationOrSpecialization(
+        getTemplateSpecializationKind());
   }
 
   void setSpecializationKind(TemplateSpecializationKind TSK) {
@@ -2702,8 +2702,8 @@ public:
   /// variable template partial specialization \c Outer<T>::Inner<U*>. Given
   /// \c Outer<float>::Inner<U*>, this function would return
   /// \c Outer<T>::Inner<U*>.
-  VarTemplatePartialSpecializationDecl *getInstantiatedFromMember() {
-    VarTemplatePartialSpecializationDecl *First =
+  VarTemplatePartialSpecializationDecl *getInstantiatedFromMember() const {
+    const VarTemplatePartialSpecializationDecl *First =
         cast<VarTemplatePartialSpecializationDecl>(getFirstDecl());
     return First->InstantiatedFromMember.getPointer();
   }
@@ -2867,7 +2867,7 @@ public:
     return const_cast<VarTemplateDecl *>(this)->getMostRecentDecl();
   }
 
-  VarTemplateDecl *getInstantiatedFromMemberTemplate() {
+  VarTemplateDecl *getInstantiatedFromMemberTemplate() const {
     return cast_or_null<VarTemplateDecl>(
         RedeclarableTemplateDecl::getInstantiatedFromMemberTemplate());
   }

@@ -154,6 +154,8 @@ public:
     return EmitCast(E->getCastKind(), E->getSubExpr(), E->getType());
   }
   ComplexPairTy VisitCastExpr(CastExpr *E) {
+    if (const auto *ECE = dyn_cast<ExplicitCastExpr>(E))
+      CGF.CGM.EmitExplicitCastExprType(ECE, &CGF);
     return EmitCast(E->getCastKind(), E->getSubExpr(), E->getType());
   }
   ComplexPairTy VisitCallExpr(const CallExpr *E);
@@ -298,6 +300,19 @@ public:
 //                                Utilities
 //===----------------------------------------------------------------------===//
 
+Address CodeGenFunction::emitAddrOfRealComponent(Address addr,
+                                                 QualType complexType) {
+  CharUnits offset = CharUnits::Zero();
+  return Builder.CreateStructGEP(addr, 0, offset, addr.getName() + ".realp");
+}
+
+Address CodeGenFunction::emitAddrOfImagComponent(Address addr,
+                                                 QualType complexType) {
+  QualType eltType = complexType->castAs<ComplexType>()->getElementType();
+  CharUnits offset = getContext().getTypeSizeInChars(eltType);
+  return Builder.CreateStructGEP(addr, 1, offset, addr.getName() + ".imagp");
+}
+
 /// EmitLoadOfLValue - Given an RValue reference for a complex, emit code to
 /// load the real and imaginary pieces, returning them as Real/Imag.
 ComplexPairTy ComplexExprEmitter::EmitLoadOfLValue(LValue lvalue,
@@ -306,29 +321,21 @@ ComplexPairTy ComplexExprEmitter::EmitLoadOfLValue(LValue lvalue,
   if (lvalue.getType()->isAtomicType())
     return CGF.EmitAtomicLoad(lvalue, loc).getComplexVal();
 
-  llvm::Value *SrcPtr = lvalue.getAddress();
+  Address SrcPtr = lvalue.getAddress();
   bool isVolatile = lvalue.isVolatileQualified();
-  unsigned AlignR = lvalue.getAlignment().getQuantity();
-  ASTContext &C = CGF.getContext();
-  QualType ComplexTy = lvalue.getType();
-  unsigned ComplexAlign = C.getTypeAlignInChars(ComplexTy).getQuantity();
-  unsigned AlignI = std::min(AlignR, ComplexAlign);
 
-  llvm::Value *Real=nullptr, *Imag=nullptr;
+  llvm::Value *Real = nullptr, *Imag = nullptr;
 
   if (!IgnoreReal || isVolatile) {
-    llvm::Value *RealP = Builder.CreateStructGEP(nullptr, SrcPtr, 0,
-                                                 SrcPtr->getName() + ".realp");
-    Real = Builder.CreateAlignedLoad(RealP, AlignR, isVolatile,
-                                     SrcPtr->getName() + ".real");
+    Address RealP = CGF.emitAddrOfRealComponent(SrcPtr, lvalue.getType());
+    Real = Builder.CreateLoad(RealP, isVolatile, SrcPtr.getName() + ".real");
   }
 
   if (!IgnoreImag || isVolatile) {
-    llvm::Value *ImagP = Builder.CreateStructGEP(nullptr, SrcPtr, 1,
-                                                 SrcPtr->getName() + ".imagp");
-    Imag = Builder.CreateAlignedLoad(ImagP, AlignI, isVolatile,
-                                     SrcPtr->getName() + ".imag");
+    Address ImagP = CGF.emitAddrOfImagComponent(SrcPtr, lvalue.getType());
+    Imag = Builder.CreateLoad(ImagP, isVolatile, SrcPtr.getName() + ".imag");
   }
+
   return ComplexPairTy(Real, Imag);
 }
 
@@ -340,19 +347,12 @@ void ComplexExprEmitter::EmitStoreOfComplex(ComplexPairTy Val, LValue lvalue,
       (!isInit && CGF.LValueIsSuitableForInlineAtomic(lvalue)))
     return CGF.EmitAtomicStore(RValue::getComplex(Val), lvalue, isInit);
 
-  llvm::Value *Ptr = lvalue.getAddress();
-  llvm::Value *RealPtr = Builder.CreateStructGEP(nullptr, Ptr, 0, "real");
-  llvm::Value *ImagPtr = Builder.CreateStructGEP(nullptr, Ptr, 1, "imag");
-  unsigned AlignR = lvalue.getAlignment().getQuantity();
-  ASTContext &C = CGF.getContext();
-  QualType ComplexTy = lvalue.getType();
-  unsigned ComplexAlign = C.getTypeAlignInChars(ComplexTy).getQuantity();
-  unsigned AlignI = std::min(AlignR, ComplexAlign);
+  Address Ptr = lvalue.getAddress();
+  Address RealPtr = CGF.emitAddrOfRealComponent(Ptr, lvalue.getType());
+  Address ImagPtr = CGF.emitAddrOfImagComponent(Ptr, lvalue.getType());
 
-  Builder.CreateAlignedStore(Val.first, RealPtr, AlignR,
-                             lvalue.isVolatileQualified());
-  Builder.CreateAlignedStore(Val.second, ImagPtr, AlignI,
-                             lvalue.isVolatileQualified());
+  Builder.CreateStore(Val.first, RealPtr, lvalue.isVolatileQualified());
+  Builder.CreateStore(Val.second, ImagPtr, lvalue.isVolatileQualified());
 }
 
 
@@ -385,8 +385,8 @@ ComplexPairTy ComplexExprEmitter::VisitCallExpr(const CallExpr *E) {
 
 ComplexPairTy ComplexExprEmitter::VisitStmtExpr(const StmtExpr *E) {
   CodeGenFunction::StmtExprEvaluation eval(CGF);
-  llvm::Value *RetAlloca = CGF.EmitCompoundStmt(*E->getSubStmt(), true);
-  assert(RetAlloca && "Expected complex return value");
+  Address RetAlloca = CGF.EmitCompoundStmt(*E->getSubStmt(), true);
+  assert(RetAlloca.isValid() && "Expected complex return value");
   return EmitLoadOfLValue(CGF.MakeAddrLValue(RetAlloca, E->getType()),
                           E->getExprLoc());
 }
@@ -436,12 +436,9 @@ ComplexPairTy ComplexExprEmitter::EmitCast(CastKind CK, Expr *Op,
 
   case CK_LValueBitCast: {
     LValue origLV = CGF.EmitLValue(Op);
-    llvm::Value *V = origLV.getAddress();
-    V = Builder.CreateBitCast(V,
-                    CGF.ConvertType(CGF.getContext().getPointerType(DestTy)));
-    return EmitLoadOfLValue(CGF.MakeAddrLValue(V, DestTy,
-                                               origLV.getAlignment()),
-                            Op->getExprLoc());
+    Address V = origLV.getAddress();
+    V = Builder.CreateElementBitCast(V, CGF.ConvertType(DestTy));
+    return EmitLoadOfLValue(CGF.MakeAddrLValue(V, DestTy), Op->getExprLoc());
   }
 
   case CK_BitCast:
@@ -588,19 +585,25 @@ ComplexPairTy ComplexExprEmitter::EmitComplexBinOpLibCall(StringRef LibCallName,
   // We *must* use the full CG function call building logic here because the
   // complex type has special ABI handling. We also should not forget about
   // special calling convention which may be used for compiler builtins.
-  const CGFunctionInfo &FuncInfo =
-    CGF.CGM.getTypes().arrangeFreeFunctionCall(
-      Op.Ty, Args, FunctionType::ExtInfo(/* No CC here - will be added later */),
-      RequiredArgs::All);
+
+  // We create a function qualified type to state that this call does not have
+  // any exceptions.
+  FunctionProtoType::ExtProtoInfo EPI;
+  EPI = EPI.withExceptionSpec(
+      FunctionProtoType::ExceptionSpecInfo(EST_BasicNoexcept));
+  SmallVector<QualType, 4> ArgsQTys(
+      4, Op.Ty->castAs<ComplexType>()->getElementType());
+  QualType FQTy = CGF.getContext().getFunctionType(Op.Ty, ArgsQTys, EPI);
+  const CGFunctionInfo &FuncInfo = CGF.CGM.getTypes().arrangeFreeFunctionCall(
+      Args, cast<FunctionType>(FQTy.getTypePtr()), false);
+
   llvm::FunctionType *FTy = CGF.CGM.getTypes().GetFunctionType(FuncInfo);
   llvm::Constant *Func = CGF.CGM.CreateBuiltinFunction(FTy, LibCallName);
   llvm::Instruction *Call;
 
   RValue Res = CGF.EmitCall(FuncInfo, Func, ReturnValueSlot(), Args,
-                            nullptr, &Call);
+                            FQTy->getAs<FunctionProtoType>(), &Call);
   cast<llvm::CallInst>(Call)->setCallingConv(CGF.CGM.getBuiltinCC());
-  cast<llvm::CallInst>(Call)->setDoesNotThrow();
-
   return Res.getComplexVal();
 }
 
@@ -1016,10 +1019,10 @@ ComplexPairTy ComplexExprEmitter::VisitInitListExpr(InitListExpr *E) {
 }
 
 ComplexPairTy ComplexExprEmitter::VisitVAArgExpr(VAArgExpr *E) {
-  llvm::Value *ArgValue = CGF.EmitVAListRef(E->getSubExpr());
-  llvm::Value *ArgPtr = CGF.EmitVAArg(ArgValue, E->getType());
+  Address ArgValue = Address::invalid();
+  Address ArgPtr = CGF.EmitVAArg(E, ArgValue);
 
-  if (!ArgPtr) {
+  if (!ArgPtr.isValid()) {
     CGF.ErrorUnsupported(E, "complex va_arg expression");
     llvm::Type *EltTy =
       CGF.ConvertType(E->getType()->castAs<ComplexType>()->getElementType());
@@ -1027,7 +1030,7 @@ ComplexPairTy ComplexExprEmitter::VisitVAArgExpr(VAArgExpr *E) {
     return ComplexPairTy(U, U);
   }
 
-  return EmitLoadOfLValue(CGF.MakeNaturalAlignAddrLValue(ArgPtr, E->getType()),
+  return EmitLoadOfLValue(CGF.MakeAddrLValue(ArgPtr, E->getType()),
                           E->getExprLoc());
 }
 

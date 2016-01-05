@@ -46,13 +46,14 @@ def remark_fe_backend_optimization_remark_missed : Remark<"%0">, BackendInfo,
 def remark_fe_backend_optimization_remark_analysis : Remark<"%0">, BackendInfo,
     InGroup<BackendOptimizationRemarkAnalysis>;
 def remark_fe_backend_optimization_remark_analysis_fpcommute : Remark<"%0; "
-    "allow commutativity by specifying '#pragma clang loop vectorize(enable)' "
-    "before the loop or by providing the compiler option '-ffast-math'">,
+    "allow reordering by specifying '#pragma clang loop vectorize(enable)' "
+    "before the loop or by providing the compiler option '-ffast-math'.">,
     BackendInfo, InGroup<BackendOptimizationRemarkAnalysis>;
 def remark_fe_backend_optimization_remark_analysis_aliasing : Remark<"%0; "
-    "avoid runtime pointer checking when you know the arrays will always be "
-    "independent by specifying '#pragma clang loop vectorize(assume_safety)' "
-    "before the loop or by specifying 'restrict' on the array arguments. "
+    "allow reordering by specifying '#pragma clang loop vectorize(enable)' "
+    "before the loop. If the arrays will always be independent specify "
+    "'#pragma clang loop vectorize(assume_safety)' before the loop or provide "
+    "the '__restrict__' qualifier with the independent array arguments. "
     "Erroneous results will occur if these options are incorrectly applied!">,
     BackendInfo, InGroup<BackendOptimizationRemarkAnalysis>;
 def warn_fe_backend_optimization_failure : Warning<"%0">, BackendInfo,
@@ -171,6 +172,9 @@ def warn_incompatible_analyzer_plugin_api : Warning<
 def note_incompatible_analyzer_plugin_api : Note<
     "current API version is '%0', but plugin was compiled with version '%1'">;
 
+def warn_module_config_mismatch : Warning<
+  "module file %0 cannot be loaded due to a configuration mismatch with the current "
+  "compilation">, InGroup<DiagGroup<"module-file-config-mismatch">>, DefaultError;
 def err_module_map_not_found : Error<"module map file '%0' not found">, 
   DefaultFatal;
 def err_missing_module_name : Error<
@@ -199,6 +203,10 @@ def remark_module_build_done : Remark<"finished building module '%0'">,
 def err_modules_embed_file_not_found :
   Error<"file '%0' specified by '-fmodules-embed-file=' not found">,
   DefaultFatal;
+
+def err_test_module_file_extension_version : Error<
+  "test module file extension '%0' has different version (%1.%2) than expected "
+  "(%3.%4)">;
 
 def err_conflicting_module_names : Error<
   "conflicting module names specified: '-fmodule-name=%0' and "

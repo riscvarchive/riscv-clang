@@ -14,6 +14,7 @@
 #include "clang/Driver/Tool.h"
 #include "clang/Driver/Types.h"
 #include "clang/Driver/Util.h"
+#include "clang/Frontend/CodeGenOptions.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/Option/Option.h"
 #include "llvm/Support/Compiler.h"
@@ -37,8 +38,9 @@ class Compiler;
 
 using llvm::opt::ArgStringList;
 
-SmallString<128> getCompilerRT(const ToolChain &TC, StringRef Component,
-                               bool Shared = false);
+SmallString<128> getCompilerRT(const ToolChain &TC,
+                               const llvm::opt::ArgList &Args,
+                               StringRef Component, bool Shared = false);
 
 /// \brief Clang compiler tool.
 class LLVM_LIBRARY_VISIBILITY Clang : public Tool {
@@ -55,11 +57,13 @@ private:
                                const Driver &D, const llvm::opt::ArgList &Args,
                                llvm::opt::ArgStringList &CmdArgs,
                                const InputInfo &Output,
-                               const InputInfoList &Inputs) const;
+                               const InputInfoList &Inputs,
+                               const ToolChain *AuxToolChain) const;
 
   void AddAArch64TargetArgs(const llvm::opt::ArgList &Args,
                             llvm::opt::ArgStringList &CmdArgs) const;
-  void AddARMTargetArgs(const llvm::opt::ArgList &Args,
+  void AddARMTargetArgs(const llvm::Triple &Triple,
+                        const llvm::opt::ArgList &Args,
                         llvm::opt::ArgStringList &CmdArgs,
                         bool KernelOrKext) const;
   void AddARM64TargetArgs(const llvm::opt::ArgList &Args,
@@ -70,9 +74,9 @@ private:
                         llvm::opt::ArgStringList &CmdArgs) const;
   void AddR600TargetArgs(const llvm::opt::ArgList &Args,
                          llvm::opt::ArgStringList &CmdArgs) const;
-  void AddRISCVTargetArgs(const llvm::opt::ArgList &Args,
-                         llvm::opt::ArgStringList &CmdArgs) const;
   void AddSparcTargetArgs(const llvm::opt::ArgList &Args,
+                          llvm::opt::ArgStringList &CmdArgs) const;
+  void AddRISCVTargetArgs(const llvm::opt::ArgList &Args,
                           llvm::opt::ArgStringList &CmdArgs) const;
   void AddSystemZTargetArgs(const llvm::opt::ArgList &Args,
                             llvm::opt::ArgStringList &CmdArgs) const;
@@ -88,7 +92,9 @@ private:
                                  RewriteKind rewrite) const;
 
   void AddClangCLArgs(const llvm::opt::ArgList &Args,
-                      llvm::opt::ArgStringList &CmdArgs) const;
+                      llvm::opt::ArgStringList &CmdArgs,
+                      enum CodeGenOptions::DebugInfoKind *DebugInfoKind,
+                      bool *EmitCodeView) const;
 
   visualstudio::Compiler *getCLFallback() const;
 
@@ -241,37 +247,62 @@ public:
 
 } // end namespace amdgpu
 
+namespace wasm {
+
+class LLVM_LIBRARY_VISIBILITY Linker : public GnuTool {
+public:
+  explicit Linker(const ToolChain &TC);
+  bool isLinkJob() const override;
+  bool hasIntegratedCPP() const override;
+  void ConstructJob(Compilation &C, const JobAction &JA,
+                    const InputInfo &Output, const InputInfoList &Inputs,
+                    const llvm::opt::ArgList &TCArgs,
+                    const char *LinkingOutput) const override;
+};
+
+} // end namespace wasm
+
 namespace arm {
 std::string getARMTargetCPU(StringRef CPU, StringRef Arch,
                             const llvm::Triple &Triple);
 const std::string getARMArch(StringRef Arch,
                              const llvm::Triple &Triple);
-const char* getARMCPUForMArch(StringRef Arch,
-                              const llvm::Triple &Triple);
-const char* getLLVMArchSuffixForARM(StringRef CPU, StringRef Arch);
+StringRef getARMCPUForMArch(StringRef Arch, const llvm::Triple &Triple);
+StringRef getLLVMArchSuffixForARM(StringRef CPU, StringRef Arch,
+                                  const llvm::Triple &Triple);
 
 void appendEBLinkFlags(const llvm::opt::ArgList &Args, ArgStringList &CmdArgs,
                        const llvm::Triple &Triple);
-}
+} // end namespace arm
 
 namespace mips {
 typedef enum { NanLegacy = 1, Nan2008 = 2 } NanEncoding;
+
+enum class FloatABI {
+  Invalid,
+  Soft,
+  Hard,
+};
+
 NanEncoding getSupportedNanEncoding(StringRef &CPU);
 void getMipsCPUAndABI(const llvm::opt::ArgList &Args,
                       const llvm::Triple &Triple, StringRef &CPUName,
                       StringRef &ABIName);
+std::string getMipsABILibSuffix(const llvm::opt::ArgList &Args,
+                                const llvm::Triple &Triple);
 bool hasMipsAbiArg(const llvm::opt::ArgList &Args, const char *Value);
 bool isUCLibc(const llvm::opt::ArgList &Args);
 bool isNaN2008(const llvm::opt::ArgList &Args, const llvm::Triple &Triple);
 bool isFPXXDefault(const llvm::Triple &Triple, StringRef CPUName,
-                   StringRef ABIName, StringRef FloatABI);
+                   StringRef ABIName, mips::FloatABI FloatABI);
 bool shouldUseFPXX(const llvm::opt::ArgList &Args, const llvm::Triple &Triple,
-                   StringRef CPUName, StringRef ABIName, StringRef FloatABI);
-}
+                   StringRef CPUName, StringRef ABIName,
+                   mips::FloatABI FloatABI);
+} // end namespace mips
 
 namespace ppc {
 bool hasPPCAbiArg(const llvm::opt::ArgList &Args, const char *Value);
-}
+} // end namespace ppc
 
 /// cloudabi -- Directly call GNU Binutils linker
 namespace cloudabi {
@@ -385,7 +416,7 @@ public:
                     const llvm::opt::ArgList &TCArgs,
                     const char *LinkingOutput) const override;
 };
-}
+} // end namespace darwin
 
 /// openbsd -- Directly call GNU Binutils assembler and linker
 namespace openbsd {
@@ -401,6 +432,7 @@ public:
                     const llvm::opt::ArgList &TCArgs,
                     const char *LinkingOutput) const override;
 };
+
 class LLVM_LIBRARY_VISIBILITY Linker : public GnuTool {
 public:
   Linker(const ToolChain &TC) : GnuTool("openbsd::Linker", "linker", TC) {}
@@ -429,6 +461,7 @@ public:
                     const llvm::opt::ArgList &TCArgs,
                     const char *LinkingOutput) const override;
 };
+
 class LLVM_LIBRARY_VISIBILITY Linker : public GnuTool {
 public:
   Linker(const ToolChain &TC) : GnuTool("bitrig::Linker", "linker", TC) {}
@@ -457,6 +490,7 @@ public:
                     const llvm::opt::ArgList &TCArgs,
                     const char *LinkingOutput) const override;
 };
+
 class LLVM_LIBRARY_VISIBILITY Linker : public GnuTool {
 public:
   Linker(const ToolChain &TC) : GnuTool("freebsd::Linker", "linker", TC) {}
@@ -474,7 +508,6 @@ public:
 /// netbsd -- Directly call GNU Binutils assembler and linker
 namespace netbsd {
 class LLVM_LIBRARY_VISIBILITY Assembler : public GnuTool {
-
 public:
   Assembler(const ToolChain &TC)
       : GnuTool("netbsd::Assembler", "assembler", TC) {}
@@ -486,8 +519,8 @@ public:
                     const llvm::opt::ArgList &TCArgs,
                     const char *LinkingOutput) const override;
 };
-class LLVM_LIBRARY_VISIBILITY Linker : public GnuTool {
 
+class LLVM_LIBRARY_VISIBILITY Linker : public GnuTool {
 public:
   Linker(const ToolChain &TC) : GnuTool("netbsd::Linker", "linker", TC) {}
 
@@ -514,6 +547,7 @@ public:
                     const llvm::opt::ArgList &TCArgs,
                     const char *LinkingOutput) const override;
 };
+
 class LLVM_LIBRARY_VISIBILITY Linker : public GnuTool {
 public:
   Linker(const ToolChain &TC) : GnuTool("GNU::Linker", "linker", TC) {}
@@ -526,7 +560,7 @@ public:
                     const llvm::opt::ArgList &TCArgs,
                     const char *LinkingOutput) const override;
 };
-}
+} // end namespace gnutools
 
 namespace nacltools {
 class LLVM_LIBRARY_VISIBILITY AssemblerARM : public gnutools::Assembler {
@@ -538,9 +572,10 @@ public:
                     const llvm::opt::ArgList &TCArgs,
                     const char *LinkingOutput) const override;
 };
-class LLVM_LIBRARY_VISIBILITY Linker : public Tool {
+
+class LLVM_LIBRARY_VISIBILITY Linker : public GnuTool {
 public:
-  Linker(const ToolChain &TC) : Tool("NaCl::Linker", "linker", TC) {}
+  Linker(const ToolChain &TC) : GnuTool("NaCl::Linker", "linker", TC) {}
 
   bool hasIntegratedCPP() const override { return false; }
   bool isLinkJob() const override { return true; }
@@ -550,7 +585,7 @@ public:
                     const llvm::opt::ArgList &TCArgs,
                     const char *LinkingOutput) const override;
 };
-}
+} // end namespace nacltools
 
 /// minix -- Directly call GNU Binutils assembler and linker
 namespace minix {
@@ -566,6 +601,7 @@ public:
                     const llvm::opt::ArgList &TCArgs,
                     const char *LinkingOutput) const override;
 };
+
 class LLVM_LIBRARY_VISIBILITY Linker : public GnuTool {
 public:
   Linker(const ToolChain &TC) : GnuTool("minix::Linker", "linker", TC) {}
@@ -594,6 +630,7 @@ public:
                     const llvm::opt::ArgList &TCArgs,
                     const char *LinkingOutput) const override;
 };
+
 class LLVM_LIBRARY_VISIBILITY Linker : public Tool {
 public:
   Linker(const ToolChain &TC) : Tool("solaris::Linker", "linker", TC) {}
@@ -622,6 +659,7 @@ public:
                     const llvm::opt::ArgList &TCArgs,
                     const char *LinkingOutput) const override;
 };
+
 class LLVM_LIBRARY_VISIBILITY Linker : public GnuTool {
 public:
   Linker(const ToolChain &TC) : GnuTool("dragonfly::Linker", "linker", TC) {}
@@ -711,9 +749,26 @@ private:
 } // end namespace MinGW
 
 namespace arm {
-StringRef getARMFloatABI(const Driver &D, const llvm::opt::ArgList &Args,
-                         const llvm::Triple &Triple);
-}
+enum class FloatABI {
+  Invalid,
+  Soft,
+  SoftFP,
+  Hard,
+};
+
+FloatABI getARMFloatABI(const ToolChain &TC, const llvm::opt::ArgList &Args);
+} // end namespace arm
+
+namespace ppc {
+enum class FloatABI {
+  Invalid,
+  Soft,
+  Hard,
+};
+
+FloatABI getPPCFloatABI(const Driver &D, const llvm::opt::ArgList &Args);
+} // end namespace ppc
+
 namespace XCore {
 // For XCore, we do not need to instantiate tools for PreProcess, PreCompile and
 // Compile.
@@ -768,7 +823,7 @@ public:
                     const llvm::opt::ArgList &TCArgs,
                     const char *LinkingOutput) const override;
 };
-}
+} // end namespace CrossWindows
 
 /// SHAVE tools -- Directly call moviCompile and moviAsm
 namespace SHAVE {
@@ -797,8 +852,55 @@ public:
 };
 } // end namespace SHAVE
 
+/// The Myriad toolchain uses tools that are in two different namespaces.
+/// The Compiler and Assembler as defined above are in the SHAVE namespace,
+/// whereas the linker, which accepts code for a mixture of Sparc and SHAVE,
+/// is in the Myriad namespace.
+namespace Myriad {
+class LLVM_LIBRARY_VISIBILITY Linker : public GnuTool {
+public:
+  Linker(const ToolChain &TC) : GnuTool("shave::Linker", "ld", TC) {}
+  bool hasIntegratedCPP() const override { return false; }
+  bool isLinkJob() const override { return true; }
+  void ConstructJob(Compilation &C, const JobAction &JA,
+                    const InputInfo &Output, const InputInfoList &Inputs,
+                    const llvm::opt::ArgList &TCArgs,
+                    const char *LinkingOutput) const override;
+};
+} // end namespace Myriad
+
+namespace PS4cpu {
+class LLVM_LIBRARY_VISIBILITY Assemble : public Tool {
+public:
+  Assemble(const ToolChain &TC)
+      : Tool("PS4cpu::Assemble", "assembler", TC, RF_Full) {}
+
+  bool hasIntegratedCPP() const override { return false; }
+
+  void ConstructJob(Compilation &C, const JobAction &JA,
+                    const InputInfo &Output,
+                    const InputInfoList &Inputs,
+                    const llvm::opt::ArgList &TCArgs,
+                    const char *LinkingOutput) const override;
+};
+
+class LLVM_LIBRARY_VISIBILITY Link : public Tool {
+public:
+  Link(const ToolChain &TC) : Tool("PS4cpu::Link", "linker", TC, RF_Full) {}
+
+  bool hasIntegratedCPP() const override { return false; }
+  bool isLinkJob() const override { return true; }
+
+  void ConstructJob(Compilation &C, const JobAction &JA,
+                    const InputInfo &Output,
+                    const InputInfoList &Inputs,
+                    const llvm::opt::ArgList &TCArgs,
+                    const char *LinkingOutput) const override;
+};
+} // end namespace PS4cpu
+
 } // end namespace tools
 } // end namespace driver
 } // end namespace clang
 
-#endif
+#endif // LLVM_CLANG_LIB_DRIVER_TOOLS_H

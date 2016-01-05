@@ -78,9 +78,8 @@ void CompilerInstance::setDiagnostics(DiagnosticsEngine *Value) {
   Diagnostics = Value;
 }
 
-void CompilerInstance::setTarget(TargetInfo *Value) {
-  Target = Value;
-}
+void CompilerInstance::setTarget(TargetInfo *Value) { Target = Value; }
+void CompilerInstance::setAuxTarget(TargetInfo *Value) { AuxTarget = Value; }
 
 void CompilerInstance::setFileManager(FileManager *Value) {
   FileMgr = Value;
@@ -96,7 +95,12 @@ void CompilerInstance::setSourceManager(SourceManager *Value) {
 
 void CompilerInstance::setPreprocessor(Preprocessor *Value) { PP = Value; }
 
-void CompilerInstance::setASTContext(ASTContext *Value) { Context = Value; }
+void CompilerInstance::setASTContext(ASTContext *Value) {
+  Context = Value;
+
+  if (Context && Consumer)
+    getASTConsumer().Initialize(getASTContext());
+}
 
 void CompilerInstance::setSema(Sema *S) {
   TheSema.reset(S);
@@ -104,6 +108,9 @@ void CompilerInstance::setSema(Sema *S) {
 
 void CompilerInstance::setASTConsumer(std::unique_ptr<ASTConsumer> Value) {
   Consumer = std::move(Value);
+
+  if (Context && Consumer)
+    getASTConsumer().Initialize(getASTContext());
 }
 
 void CompilerInstance::setCodeCompletionConsumer(CodeCompleteConsumer *Value) {
@@ -148,7 +155,6 @@ static void SetUpDiagnosticLog(DiagnosticOptions *DiagOpts,
           << DiagOpts->DiagnosticLogFile << EC.message();
     } else {
       FileOS->SetUnbuffered();
-      FileOS->SetUseAtomicWrites(true);
       OS = FileOS.get();
       StreamOwner = std::move(FileOS);
     }
@@ -304,7 +310,7 @@ void CompilerInstance::createPreprocessor(TranslationUnitKind TUKind) {
   PP = new Preprocessor(&getPreprocessorOpts(), getDiagnostics(), getLangOpts(),
                         getSourceManager(), *HeaderInfo, *this, PTHMgr,
                         /*OwnsHeaderSearch=*/true, TUKind);
-  PP->Initialize(getTarget());
+  PP->Initialize(getTarget(), getAuxTarget());
 
   // Note that this is different then passing PTHMgr to Preprocessor's ctor.
   // That argument is used as the IdentifierInfoLookup argument to
@@ -385,10 +391,11 @@ std::string CompilerInstance::getSpecificModuleCachePath() {
 
 void CompilerInstance::createASTContext() {
   Preprocessor &PP = getPreprocessor();
-  Context = new ASTContext(getLangOpts(), PP.getSourceManager(),
-                           PP.getIdentifierTable(), PP.getSelectorTable(),
-                           PP.getBuiltinInfo());
-  Context->InitBuiltinTypes(getTarget());
+  auto *Context = new ASTContext(getLangOpts(), PP.getSourceManager(),
+                                 PP.getIdentifierTable(), PP.getSelectorTable(),
+                                 PP.getBuiltinInfo());
+  Context->InitBuiltinTypes(getTarget(), getAuxTarget());
+  setASTContext(Context);
 }
 
 // ExternalASTSource
@@ -400,7 +407,9 @@ void CompilerInstance::createPCHExternalASTSource(
   ModuleManager = createPCHExternalASTSource(
       Path, getHeaderSearchOpts().Sysroot, DisablePCHValidation,
       AllowPCHWithCompilerErrors, getPreprocessor(), getASTContext(),
-      getPCHContainerReader(), DeserializationListener,
+      getPCHContainerReader(),
+      getFrontendOpts().ModuleFileExtensions,
+      DeserializationListener,
       OwnDeserializationListener, Preamble,
       getFrontendOpts().UseGlobalModuleIndex);
 }
@@ -409,15 +418,16 @@ IntrusiveRefCntPtr<ASTReader> CompilerInstance::createPCHExternalASTSource(
     StringRef Path, StringRef Sysroot, bool DisablePCHValidation,
     bool AllowPCHWithCompilerErrors, Preprocessor &PP, ASTContext &Context,
     const PCHContainerReader &PCHContainerRdr,
+    ArrayRef<IntrusiveRefCntPtr<ModuleFileExtension>> Extensions,
     void *DeserializationListener, bool OwnDeserializationListener,
     bool Preamble, bool UseGlobalModuleIndex) {
   HeaderSearchOptions &HSOpts = PP.getHeaderSearchInfo().getHeaderSearchOpts();
 
   IntrusiveRefCntPtr<ASTReader> Reader(new ASTReader(
-      PP, Context, PCHContainerRdr, Sysroot.empty() ? "" : Sysroot.data(),
-      DisablePCHValidation, AllowPCHWithCompilerErrors,
-      /*AllowConfigurationMismatch*/ false, HSOpts.ModulesValidateSystemHeaders,
-      UseGlobalModuleIndex));
+      PP, Context, PCHContainerRdr, Extensions,
+      Sysroot.empty() ? "" : Sysroot.data(), DisablePCHValidation,
+      AllowPCHWithCompilerErrors, /*AllowConfigurationMismatch*/ false,
+      HSOpts.ModulesValidateSystemHeaders, UseGlobalModuleIndex));
 
   // We need the external source to be set up before we read the AST, because
   // eagerly-deserialized declarations may use it.
@@ -632,8 +642,10 @@ std::unique_ptr<llvm::raw_pwrite_stream> CompilerInstance::createOutputFile(
       llvm::sys::fs::status(OutputPath, Status);
       if (llvm::sys::fs::exists(Status)) {
         // Fail early if we can't write to the final destination.
-        if (!llvm::sys::fs::can_write(OutputPath))
+        if (!llvm::sys::fs::can_write(OutputPath)) {
+          Error = make_error_code(llvm::errc::operation_not_permitted);
           return nullptr;
+        }
 
         // Don't use a temporary if the output is a special file. This handles
         // things like '-o /dev/null'
@@ -716,7 +728,7 @@ bool CompilerInstance::InitializeSourceManager(const FrontendInputFile &Input,
   if (Input.isBuffer()) {
     SourceMgr.setMainFileID(SourceMgr.createFileID(
         std::unique_ptr<llvm::MemoryBuffer>(Input.getBuffer()), Kind));
-    assert(!SourceMgr.getMainFileID().isInvalid() &&
+    assert(SourceMgr.getMainFileID().isValid() &&
            "Couldn't establish MainFileID!");
     return true;
   }
@@ -767,7 +779,7 @@ bool CompilerInstance::InitializeSourceManager(const FrontendInputFile &Input,
     SourceMgr.overrideFileContents(File, std::move(SB));
   }
 
-  assert(!SourceMgr.getMainFileID().isInvalid() &&
+  assert(SourceMgr.getMainFileID().isValid() &&
          "Couldn't establish MainFileID!");
   return true;
 }
@@ -788,6 +800,13 @@ bool CompilerInstance::ExecuteAction(FrontendAction &Act) {
                                          getInvocation().TargetOpts));
   if (!hasTarget())
     return false;
+
+  // Create TargetInfo for the other side of CUDA compilation.
+  if (getLangOpts().CUDA && !getFrontendOpts().AuxTriple.empty()) {
+    std::shared_ptr<TargetOptions> TO(new TargetOptions);
+    TO->Triple = getFrontendOpts().AuxTriple;
+    setAuxTarget(TargetInfo::CreateTargetInfo(getDiagnostics(), TO));
+  }
 
   // Inform the target of the language options.
   //
@@ -811,13 +830,13 @@ bool CompilerInstance::ExecuteAction(FrontendAction &Act) {
   if (getFrontendOpts().ShowStats)
     llvm::EnableStatistics();
 
-  for (unsigned i = 0, e = getFrontendOpts().Inputs.size(); i != e; ++i) {
+  for (const FrontendInputFile &FIF : getFrontendOpts().Inputs) {
     // Reset the ID tables if we are reusing the SourceManager and parsing
     // regular files.
     if (hasSourceManager() && !Act.isModelParsingAction())
       getSourceManager().clearIDTables();
 
-    if (Act.BeginSourceFile(*this, getFrontendOpts().Inputs[i])) {
+    if (Act.BeginSourceFile(*this, FIF)) {
       Act.Execute();
       Act.EndSourceFile();
     }
@@ -1249,7 +1268,8 @@ void CompilerInstance::createModuleManager() {
       ReadTimer = llvm::make_unique<llvm::Timer>("Reading modules",
                                                  *FrontendTimerGroup);
     ModuleManager = new ASTReader(
-        getPreprocessor(), *Context, getPCHContainerReader(),
+        getPreprocessor(), getASTContext(), getPCHContainerReader(),
+        getFrontendOpts().ModuleFileExtensions,
         Sysroot.empty() ? "" : Sysroot.c_str(), PPOpts.DisablePCHValidation,
         /*AllowASTWithCompilerErrors=*/false,
         /*AllowConfigurationMismatch=*/false,
@@ -1265,10 +1285,8 @@ void CompilerInstance::createModuleManager() {
     getASTContext().setExternalSource(ModuleManager);
     if (hasSema())
       ModuleManager->InitializeSema(getSema());
-    if (hasASTConsumer()) {
-      getASTConsumer().Initialize(getASTContext());
+    if (hasASTConsumer())
       ModuleManager->StartTranslationUnit(&getASTConsumer());
-    }
 
     if (TheDependencyFileGenerator)
       TheDependencyFileGenerator->AttachToASTReader(*ModuleManager);
@@ -1308,6 +1326,17 @@ bool CompilerInstance::loadModuleFile(StringRef FileName) {
       }
       LoadedModules.clear();
     }
+
+    void markAllUnavailable() {
+      for (auto *II : LoadedModules) {
+        if (Module *M = CI.getPreprocessor()
+                            .getHeaderSearchInfo()
+                            .getModuleMap()
+                            .findModule(II->getName()))
+          M->HasIncompatibleModuleFile = true;
+      }
+      LoadedModules.clear();
+    }
   };
 
   // If we don't already have an ASTReader, create one now.
@@ -1320,15 +1349,27 @@ bool CompilerInstance::loadModuleFile(StringRef FileName) {
                                                    std::move(Listener));
 
   // Try to load the module file.
-  if (ModuleManager->ReadAST(FileName, serialization::MK_ExplicitModule,
-                             SourceLocation(), ASTReader::ARR_None)
-          != ASTReader::Success)
-    return false;
+  switch (ModuleManager->ReadAST(FileName, serialization::MK_ExplicitModule,
+                                 SourceLocation(),
+                                 ASTReader::ARR_ConfigurationMismatch)) {
+  case ASTReader::Success:
+    // We successfully loaded the module file; remember the set of provided
+    // modules so that we don't try to load implicit modules for them.
+    ListenerRef.registerAll();
+    return true;
 
-  // We successfully loaded the module file; remember the set of provided
-  // modules so that we don't try to load implicit modules for them.
-  ListenerRef.registerAll();
-  return true;
+  case ASTReader::ConfigurationMismatch:
+    // Ignore unusable module files.
+    getDiagnostics().Report(SourceLocation(), diag::warn_module_config_mismatch)
+        << FileName;
+    // All modules provided by any files we tried and failed to load are now
+    // unavailable; includes of those modules should now be handled textually.
+    ListenerRef.markAllUnavailable();
+    return true;
+
+  default:
+    return false;
+  }
 }
 
 ModuleLoadResult
@@ -1343,7 +1384,7 @@ CompilerInstance::loadModule(SourceLocation ImportLoc,
   // If we've already handled this import, just return the cached result.
   // This one-element cache is important to eliminate redundant diagnostics
   // when both the preprocessor and parser see the same import declaration.
-  if (!ImportLoc.isInvalid() && LastModuleImportLoc == ImportLoc) {
+  if (ImportLoc.isValid() && LastModuleImportLoc == ImportLoc) {
     // Make the named module visible.
     if (LastModuleImportResult && ModuleName != getLangOpts().CurrentModule &&
         ModuleName != getLangOpts().ImplementationOfModule)
@@ -1379,6 +1420,12 @@ CompilerInstance::loadModule(SourceLocation ImportLoc,
     std::string ModuleFileName =
         PP->getHeaderSearchInfo().getModuleFileName(Module);
     if (ModuleFileName.empty()) {
+      if (Module->HasIncompatibleModuleFile) {
+        // We tried and failed to load a module file for this module. Fall
+        // back to textual inclusion for its headers.
+        return ModuleLoadResult(nullptr, /*missingExpected*/true);
+      }
+
       getDiagnostics().Report(ModuleNameLoc, diag::err_module_build_disabled)
           << ModuleName;
       ModuleBuildFailed = true;

@@ -190,9 +190,9 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
 
     IntrusiveRefCntPtr<DiagnosticsEngine> Diags(&CI.getDiagnostics());
 
-    std::unique_ptr<ASTUnit> AST =
-        ASTUnit::LoadFromASTFile(InputFile, CI.getPCHContainerReader(),
-                                 Diags, CI.getFileSystemOpts());
+    std::unique_ptr<ASTUnit> AST = ASTUnit::LoadFromASTFile(
+        InputFile, CI.getPCHContainerReader(), Diags, CI.getFileSystemOpts(),
+        CI.getCodeGenOpts().DebugTypeExtRefs);
 
     if (!AST)
       goto failure;
@@ -284,7 +284,7 @@ bool FrontendAction::BeginSourceFile(CompilerInstance &CI,
 
       if (!Found) {
         CI.getDiagnostics().Report(diag::err_fe_no_pch_in_dir) << PCHInclude;
-        return true;
+        goto failure;
       }
     }
   }
