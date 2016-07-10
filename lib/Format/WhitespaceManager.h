@@ -37,7 +37,7 @@ namespace format {
 /// There may be multiple calls to \c breakToken for a given token.
 class WhitespaceManager {
 public:
-  WhitespaceManager(SourceManager &SourceMgr, const FormatStyle &Style,
+  WhitespaceManager(const SourceManager &SourceMgr, const FormatStyle &Style,
                     bool UseCRLF)
       : SourceMgr(SourceMgr), Style(Style), UseCRLF(UseCRLF) {}
 
@@ -109,7 +109,8 @@ public:
            unsigned IndentLevel, int Spaces, unsigned StartOfTokenColumn,
            unsigned NewlinesBefore, StringRef PreviousLinePostfix,
            StringRef CurrentLinePrefix, tok::TokenKind Kind,
-           bool ContinuesPPDirective, bool IsStartOfDeclName);
+           bool ContinuesPPDirective, bool IsStartOfDeclName,
+           bool IsInsideToken);
 
     bool CreateReplacement;
     // Changes might be in the middle of a token, so we cannot just keep the
@@ -138,6 +139,10 @@ public:
     // of the lines in a block comment. This is used when aligning trailing
     // comments. Uncompensated negative offset is truncated to 0.
     int Spaces;
+
+    // If this change is inside of a token but not at the start of the token or
+    // directly after a newline.
+    bool IsInsideToken;
 
     // \c IsTrailingComment, \c TokenLength, \c PreviousEndOfTokenColumn and
     // \c EscapedNewlineColumn will be calculated in
@@ -198,7 +203,7 @@ private:
                         unsigned Spaces, unsigned WhitespaceStartColumn);
 
   SmallVector<Change, 16> Changes;
-  SourceManager &SourceMgr;
+  const SourceManager &SourceMgr;
   tooling::Replacements Replaces;
   const FormatStyle &Style;
   bool UseCRLF;

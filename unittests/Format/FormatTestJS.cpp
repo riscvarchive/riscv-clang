@@ -49,10 +49,23 @@ protected:
   static void verifyFormat(
       llvm::StringRef Code,
       const FormatStyle &Style = getGoogleStyle(FormatStyle::LK_JavaScript)) {
-    std::string result = format(test::messUp(Code), Style);
-    EXPECT_EQ(Code.str(), result) << "Formatted:\n" << result;
+    std::string Result = format(test::messUp(Code), Style);
+    EXPECT_EQ(Code.str(), Result) << "Formatted:\n" << Result;
+  }
+
+  static void verifyFormat(
+      llvm::StringRef Expected,
+      llvm::StringRef Code,
+      const FormatStyle &Style = getGoogleStyle(FormatStyle::LK_JavaScript)) {
+    std::string Result = format(Code, Style);
+    EXPECT_EQ(Expected.str(), Result) << "Formatted:\n" << Result;
   }
 };
+
+TEST_F(FormatTestJS, BlockComments) {
+  verifyFormat("/* aaaaaaaaaaaaa */ aaaaaaaaaaaaaaaaaaaaaaaaaaa(\n"
+               "    aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa);");
+}
 
 TEST_F(FormatTestJS, UnderstandsJavaScriptOperators) {
   verifyFormat("a == = b;");
@@ -86,6 +99,17 @@ TEST_F(FormatTestJS, UnderstandsJavaScriptOperators) {
 
   verifyFormat("var b = a.map((x) => x + 1);");
   verifyFormat("return ('aaa') in bbbb;");
+  verifyFormat("var x = aaaaaaaaaaaaaaaaaaaaaaaaa() in\n"
+               "    aaaa.aaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;");
+  FormatStyle Style = getGoogleJSStyleWithColumns(80);
+  Style.AlignOperands = true;
+  verifyFormat("var x = aaaaaaaaaaaaaaaaaaaaaaaaa() in\n"
+               "        aaaa.aaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;",
+               Style);
+  Style.BreakBeforeBinaryOperators = FormatStyle::BOS_All;
+  verifyFormat("var x = aaaaaaaaaaaaaaaaaaaaaaaaa()\n"
+               "            in aaaa.aaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa;",
+               Style);
 
   // ES6 spread operator.
   verifyFormat("someFunction(...a);");
@@ -106,6 +130,11 @@ TEST_F(FormatTestJS, ReservedWords) {
   verifyFormat("x.class.struct = 1;");
   verifyFormat("x.case = 1;");
   verifyFormat("x.interface = 1;");
+  verifyFormat("x.for = 1;");
+  verifyFormat("x.of() = 1;");
+  verifyFormat("x.in() = 1;");
+  verifyFormat("x.let() = 1;");
+  verifyFormat("x.var() = 1;");
   verifyFormat("x = {\n"
                "  a: 12,\n"
                "  interface: 1,\n"
@@ -113,6 +142,9 @@ TEST_F(FormatTestJS, ReservedWords) {
                "};");
   verifyFormat("var struct = 2;");
   verifyFormat("var union = 2;");
+  verifyFormat("var interface = 2;");
+  verifyFormat("interface = 2;");
+  verifyFormat("x = interface instanceof y;");
 }
 
 TEST_F(FormatTestJS, CppKeywords) {
@@ -122,6 +154,7 @@ TEST_F(FormatTestJS, CppKeywords) {
 
 TEST_F(FormatTestJS, ES6DestructuringAssignment) {
   verifyFormat("var [a, b, c] = [1, 2, 3];");
+  verifyFormat("const [a, b, c] = [1, 2, 3];");
   verifyFormat("let [a, b, c] = [1, 2, 3];");
   verifyFormat("var {a, b} = {a: 1, b: 2};");
   verifyFormat("let {a, b} = {a: 1, b: 2};");
@@ -189,6 +222,18 @@ TEST_F(FormatTestJS, ContainerLiterals) {
                "  b: 2,\n"
                "  [c]: 3,\n"
                "};");
+
+  // Object literals can leave out labels.
+  verifyFormat("f({a}, () => {\n"
+               "  g();  //\n"
+               "});");
+
+  // Keys can be quoted.
+  verifyFormat("var x = {\n"
+               "  a: a,\n"
+               "  b: b,\n"
+               "  'c': c,\n"
+               "};");
 }
 
 TEST_F(FormatTestJS, MethodsInObjectLiterals) {
@@ -234,7 +279,7 @@ TEST_F(FormatTestJS, SpacesInContainerLiterals) {
   verifyFormat("f({'a': [{}]});");
 }
 
-TEST_F(FormatTestJS, SingleQuoteStrings) {
+TEST_F(FormatTestJS, SingleQuotedStrings) {
   verifyFormat("this.function('', true);");
 }
 
@@ -261,11 +306,22 @@ TEST_F(FormatTestJS, GoogModules) {
                getGoogleJSStyleWithColumns(40));
   verifyFormat("goog.setTestOnly('this.is.really.absurdly.long');",
                getGoogleJSStyleWithColumns(40));
+  verifyFormat("goog.forwardDeclare('this.is.really.absurdly.long');",
+               getGoogleJSStyleWithColumns(40));
 
   // These should be wrapped normally.
   verifyFormat(
       "var MyLongClassName =\n"
       "    goog.module.get('my.long.module.name.followedBy.MyLongClassName');");
+}
+
+TEST_F(FormatTestJS, FormatsNamespaces) {
+  verifyFormat("namespace Foo {\n"
+               "  export let x = 1;\n"
+               "}\n");
+  verifyFormat("declare namespace Foo {\n"
+               "  export let x: number;\n"
+               "}\n");
 }
 
 TEST_F(FormatTestJS, FormatsFreestandingFunctions) {
@@ -280,17 +336,58 @@ TEST_F(FormatTestJS, FormatsFreestandingFunctions) {
   verifyFormat("function f() {}");
 }
 
+TEST_F(FormatTestJS, GeneratorFunctions) {
+  verifyFormat("function* f() {\n"
+               "  let x = 1;\n"
+               "  yield x;\n"
+               "  yield* something();\n"
+               "}");
+  verifyFormat("function*\n"
+               "    f() {\n"
+               "}",
+               getGoogleJSStyleWithColumns(8));
+  verifyFormat("export function* f() {\n"
+               "  yield 1;\n"
+               "}\n");
+  verifyFormat("class X {\n"
+               "  * generatorMethod() { yield x; }\n"
+               "}");
+}
+
+TEST_F(FormatTestJS, AsyncFunctions) {
+  verifyFormat("async function f() {\n"
+               "  let x = 1;\n"
+               "  return fetch(x);\n"
+               "}");
+  verifyFormat("async function* f() {\n"
+               "  yield fetch(x);\n"
+               "}");
+  verifyFormat("export async function f() {\n"
+               "  return fetch(x);\n"
+               "}");
+  verifyFormat("class X {\n"
+               "  async asyncMethod() { return fetch(1); }\n"
+               "}");
+  verifyFormat("function initialize() {\n"
+               "  // Comment.\n"
+               "  return async.then();\n"
+               "}\n");
+}
+
 TEST_F(FormatTestJS, ArrayLiterals) {
   verifyFormat("var aaaaa: List<SomeThing> =\n"
                "    [new SomeThingAAAAAAAAAAAA(), new SomeThingBBBBBBBBB()];");
   verifyFormat("return [\n"
-               "  aaaaaaaaaaaaaaaaaaaaaaaaaaa,\n"
-               "  bbbbbbbbbbbbbbbbbbbbbbbbbbb,\n"
+               "  aaaaaaaaaaaaaaaaaaaaaaaaaaa, bbbbbbbbbbbbbbbbbbbbbbbbbbb,\n"
                "  ccccccccccccccccccccccccccc\n"
                "];");
+  verifyFormat("return [\n"
+               "  aaaa().bbbbbbbb('A'),\n"
+               "  aaaa().bbbbbbbb('B'),\n"
+               "  aaaa().bbbbbbbb('C'),\n"
+               "];");
   verifyFormat("var someVariable = SomeFunction([\n"
-               "  aaaaaaaaaaaaaaaaaaaaaaaaaaa,\n"
-               "  bbbbbbbbbbbbbbbbbbbbbbbbbbb,\n"
+               "  aaaaaaaaaaaaaaaaaaaaaaaaaaa, bbbbbbbbbbbbbbbbbbbbbbbbbbb,\n"
                "  ccccccccccccccccccccccccccc\n"
                "]);");
   verifyFormat("var someVariable = SomeFunction([\n"
@@ -298,16 +395,14 @@ TEST_F(FormatTestJS, ArrayLiterals) {
                "]);",
                getGoogleJSStyleWithColumns(51));
   verifyFormat("var someVariable = SomeFunction(aaaa, [\n"
-               "  aaaaaaaaaaaaaaaaaaaaaaaaaaa,\n"
-               "  bbbbbbbbbbbbbbbbbbbbbbbbbbb,\n"
+               "  aaaaaaaaaaaaaaaaaaaaaaaaaaa, bbbbbbbbbbbbbbbbbbbbbbbbbbb,\n"
                "  ccccccccccccccccccccccccccc\n"
                "]);");
   verifyFormat("var someVariable = SomeFunction(\n"
                "    aaaa,\n"
                "    [\n"
-               "      aaaaaaaaaaaaaaaaaaaaaaaaaaa,\n"
-               "      bbbbbbbbbbbbbbbbbbbbbbbbbbb,\n"
-               "      ccccccccccccccccccccccccccc\n"
+               "      aaaaaaaaaaaaaaaaaaaaaaaaaa, bbbbbbbbbbbbbbbbbbbbbbbbbb,\n"
+               "      cccccccccccccccccccccccccc\n"
                "    ],\n"
                "    aaaa);");
   verifyFormat("var aaaa = aaaaa ||  // wrap\n"
@@ -525,6 +620,12 @@ TEST_F(FormatTestJS, MultipleFunctionLiterals) {
   verifyFormat("getSomeLongPromise()\n"
                "    .then(function(value) { body(); })\n"
                "    .thenCatch(function(error) { body(); });");
+
+  verifyFormat("return [aaaaaaaaaaaaaaaaaaaaaa]\n"
+               "    .aaaaaaa(function() {\n"
+               "      //\n"
+               "    })\n"
+               "    .bbbbbb();");
 }
 
 TEST_F(FormatTestJS, ArrowFunctions) {
@@ -572,9 +673,15 @@ TEST_F(FormatTestJS, ReturnStatements) {
 TEST_F(FormatTestJS, ForLoops) {
   verifyFormat("for (var i in [2, 3]) {\n"
                "}");
+  verifyFormat("for (var i of [2, 3]) {\n"
+               "}");
+  verifyFormat("for (let {a, b} of x) {\n"
+               "}");
+  verifyFormat("for (let {a, b} in x) {\n"
+               "}");
 }
 
-TEST_F(FormatTestJS, AutomaticSemicolonInsertion) {
+TEST_F(FormatTestJS, WrapRespectsAutomaticSemicolonInsertion) {
   // The following statements must not wrap, as otherwise the program meaning
   // would change due to automatic semicolon insertion.
   // See http://www.ecma-international.org/ecma-262/5.1/#sec-7.9.1.
@@ -584,6 +691,60 @@ TEST_F(FormatTestJS, AutomaticSemicolonInsertion) {
   verifyFormat("throw aaaaa;", getGoogleJSStyleWithColumns(10));
   verifyFormat("aaaaaaaaa++;", getGoogleJSStyleWithColumns(10));
   verifyFormat("aaaaaaaaa--;", getGoogleJSStyleWithColumns(10));
+  verifyFormat("return [\n"
+               "  aaa\n"
+               "];",
+               getGoogleJSStyleWithColumns(12));
+}
+
+TEST_F(FormatTestJS, AutomaticSemicolonInsertionHeuristic) {
+  verifyFormat("a\n"
+               "b;",
+               " a \n"
+               " b ;");
+  verifyFormat("a()\n"
+               "b;",
+               " a ()\n"
+               " b ;");
+  verifyFormat("a[b]\n"
+               "c;",
+               "a [b]\n"
+               "c ;");
+  verifyFormat("1\n"
+               "a;",
+               "1 \n"
+               "a ;");
+  verifyFormat("a\n"
+               "1;",
+               "a \n"
+               "1 ;");
+  verifyFormat("a\n"
+               "'x';",
+               "a \n"
+               " 'x';");
+  verifyFormat("a++\n"
+               "b;",
+               "a ++\n"
+               "b ;");
+  verifyFormat("a\n"
+               "!b && c;",
+               "a \n"
+               " ! b && c;");
+  verifyFormat("a\n"
+               "if (1) f();",
+               " a\n"
+               " if (1) f();");
+  verifyFormat("a\n"
+               "class X {}",
+               " a\n"
+               " class X {}");
+  verifyFormat("var a", "var\n"
+                        "a");
+  verifyFormat("x instanceof String", "x\n"
+                                      "instanceof\n"
+                                      "String");
+  verifyFormat("function f(@Foo bar) {}", "function f(@Foo\n"
+                                          "  bar) {}");
 }
 
 TEST_F(FormatTestJS, ClosureStyleCasts) {
@@ -684,13 +845,13 @@ TEST_F(FormatTestJS, RegexLiteralSpecialCharacters) {
   verifyFormat("var regex = /\a\\//g;");
   verifyFormat("var regex = /a\\//;\n"
                "var x = 0;");
-  EXPECT_EQ("var regex = /'/g;", format("var regex = /'/g ;"));
-  EXPECT_EQ("var regex = /'/g;  //'", format("var regex = /'/g ; //'"));
-  EXPECT_EQ("var regex = /\\/*/;\n"
-            "var x = 0;",
-            format("var regex = /\\/*/;\n"
-                   "var x=0;"));
-  EXPECT_EQ("var x = /a\\//;", format("var x = /a\\//  \n;"));
+  verifyFormat("var regex = /'/g;", "var regex = /'/g ;");
+  verifyFormat("var regex = /'/g;  //'", "var regex = /'/g ; //'");
+  verifyFormat("var regex = /\\/*/;\n"
+               "var x = 0;",
+               "var regex = /\\/*/;\n"
+               "var x=0;");
+  verifyFormat("var x = /a\\//;", "var x = /a\\//  \n;");
   verifyFormat("var regex = /\"/;", getGoogleJSStyleWithColumns(16));
   verifyFormat("var regex =\n"
                "    /\"/;",
@@ -726,15 +887,39 @@ TEST_F(FormatTestJS, RegexLiteralExamples) {
 
 TEST_F(FormatTestJS, TypeAnnotations) {
   verifyFormat("var x: string;");
+  verifyFormat("var x: {a: string; b: number;} = {};");
   verifyFormat("function x(): string {\n  return 'x';\n}");
   verifyFormat("function x(): {x: string} {\n  return {x: 'x'};\n}");
   verifyFormat("function x(y: string): string {\n  return 'x';\n}");
   verifyFormat("for (var y: string in x) {\n  x();\n}");
+  verifyFormat("for (var y: string of x) {\n  x();\n}");
+  verifyFormat("function x(y: {a?: number;} = {}): number {\n"
+               "  return 12;\n"
+               "}");
   verifyFormat("((a: string, b: number): string => a + b);");
   verifyFormat("var x: (y: number) => string;");
   verifyFormat("var x: P<string, (a: number) => string>;");
   verifyFormat("var x = {y: function(): z { return 1; }};");
   verifyFormat("var x = {y: function(): {a: number} { return 1; }};");
+  verifyFormat("function someFunc(args: string[]):\n"
+               "    {longReturnValue: string[]} {}",
+               getGoogleJSStyleWithColumns(60));
+}
+
+TEST_F(FormatTestJS, UnionIntersectionTypes) {
+  verifyFormat("let x: A|B = A | B;");
+  verifyFormat("let x: A&B|C = A & B;");
+  verifyFormat("let x: Foo<A|B> = new Foo<A|B>();");
+  verifyFormat("function(x: A|B): C&D {}");
+  verifyFormat("function(x: A|B = A | B): C&D {}");
+  verifyFormat("function x(path: number|string) {}");
+  verifyFormat("function x(): string|number {}");
+  verifyFormat("type Foo = Bar|Baz;");
+  verifyFormat("type Foo = Bar<X>|Baz;");
+  verifyFormat("type Foo = (Bar<X>|Baz);");
+  verifyFormat("let x: Bar|Baz;");
+  verifyFormat("let x: Bar<X>|Baz;");
+  verifyFormat("let x: (Foo|Bar)[];");
 }
 
 TEST_F(FormatTestJS, ClassDeclarations) {
@@ -750,6 +935,16 @@ TEST_F(FormatTestJS, ClassDeclarations) {
                "  aaaaaaaaaaaaaaaa(aaaaaaaaaaaaaaa: aaaaaaaaaaaaaaaaaaaa):\n"
                "      aaaaaaaaaaaaaaaaaaaaaa {}\n"
                "}");
+  verifyFormat("foo = class Name {\n"
+               "  constructor() {}\n"
+               "};");
+  verifyFormat("foo = class {\n"
+               "  constructor() {}\n"
+               "};");
+  verifyFormat("class C {\n"
+               "  x: {y: Z;} = {};\n"
+               "  private y: {y: Z;} = {};\n"
+               "}");
 
   // ':' is not a type declaration here.
   verifyFormat("class X {\n"
@@ -759,12 +954,18 @@ TEST_F(FormatTestJS, ClassDeclarations) {
                "    },\n"
                "  };\n"
                "}");
+  verifyFormat("@Component({\n"
+               "  moduleId: module.id,\n"
+               "})\n"
+               "class SessionListComponent implements OnDestroy, OnInit {\n"
+               "}");
 }
 
 TEST_F(FormatTestJS, InterfaceDeclarations) {
   verifyFormat("interface I {\n"
                "  x: string;\n"
                "  enum: string[];\n"
+               "  enum?: string[];\n"
                "}\n"
                "var y;");
   // Ensure that state is reset after parsing the interface.
@@ -805,29 +1006,32 @@ TEST_F(FormatTestJS, MetadataAnnotations) {
                "    return 'y';\n"
                "  }\n"
                "}");
+  verifyFormat("class C {\n"
+               "  private x(@A x: string) {}\n"
+               "}");
   verifyFormat("class X {}\n"
                "class Y {}");
+}
+
+TEST_F(FormatTestJS, TypeAliases) {
+  verifyFormat("type X = number;\n"
+               "class C {}");
+  verifyFormat("type X<Y> = Z<Y>;");
+  verifyFormat("type X = {\n"
+               "  y: number\n"
+               "};\n"
+               "class C {}");
 }
 
 TEST_F(FormatTestJS, Modules) {
   verifyFormat("import SomeThing from 'some/module.js';");
   verifyFormat("import {X, Y} from 'some/module.js';");
-  verifyFormat("import {\n"
-               "  VeryLongImportsAreAnnoying,\n"
-               "  VeryLongImportsAreAnnoying,\n"
-               "  VeryLongImportsAreAnnoying,\n"
-               "  VeryLongImportsAreAnnoying\n"
-               "} from 'some/module.js';");
-  verifyFormat("import {\n"
-               "  X,\n"
-               "  Y,\n"
-               "} from 'some/module.js';");
-  verifyFormat("import {\n"
-               "  X,\n"
-               "  Y,\n"
-               "} from 'some/long/module.js';",
-               getGoogleJSStyleWithColumns(20));
+  verifyFormat("import a, {X, Y} from 'some/module.js';");
+  verifyFormat("import {X, Y,} from 'some/module.js';");
   verifyFormat("import {X as myLocalX, Y as myLocalY} from 'some/module.js';");
+  // Ensure Automatic Semicolon Insertion does not break on "as\n".
+  verifyFormat("import {X as myX} from 'm';", "import {X as\n"
+                                              " myX} from 'm';");
   verifyFormat("import * as lib from 'some/module.js';");
   verifyFormat("var x = {import: 1};\nx.import = 2;");
 
@@ -837,18 +1041,32 @@ TEST_F(FormatTestJS, Modules) {
   verifyFormat("export function A() {}\n"
                "export default function B() {}\n"
                "export function C() {}");
+  verifyFormat("export default () => {\n"
+               "  let x = 1;\n"
+               "  return x;\n"
+               "}");
   verifyFormat("export const x = 12;");
   verifyFormat("export default class X {}");
   verifyFormat("export {X, Y} from 'some/module.js';");
+  verifyFormat("export {X, Y,} from 'some/module.js';");
+  verifyFormat("export {SomeVeryLongExport as X, "
+               "SomeOtherVeryLongExport as Y} from 'some/module.js';");
+  // export without 'from' is wrapped.
+  verifyFormat("export let someRatherLongVariableName =\n"
+               "    someSurprisinglyLongVariable + someOtherRatherLongVar;");
+  // ... but not if from is just an identifier.
   verifyFormat("export {\n"
-               "  X,\n"
-               "  Y,\n"
-               "} from 'some/module.js';");
+               "  from as from,\n"
+               "  someSurprisinglyLongVariable as\n"
+               "      from\n"
+               "};",
+               getGoogleJSStyleWithColumns(20));
   verifyFormat("export class C {\n"
                "  x: number;\n"
                "  y: string;\n"
                "}");
   verifyFormat("export class X { y: number; }");
+  verifyFormat("export abstract class X { y: number; }");
   verifyFormat("export default class X { y: number }");
   verifyFormat("export default function() {\n  return 1;\n}");
   verifyFormat("export var x = 12;");
@@ -871,44 +1089,80 @@ TEST_F(FormatTestJS, Modules) {
                "];");
   verifyFormat("export default [];");
   verifyFormat("export default () => {};");
+  verifyFormat("export interface Foo { foo: number; }\n"
+               "export class Bar {\n"
+               "  blah(): string { return this.blah; };\n"
+               "}");
+}
+
+TEST_F(FormatTestJS, ImportWrapping) {
+  verifyFormat("import {VeryLongImportsAreAnnoying, VeryLongImportsAreAnnoying,"
+               " VeryLongImportsAreAnnoying, VeryLongImportsAreAnnoying"
+               "} from 'some/module.js';");
+  FormatStyle Style = getGoogleJSStyleWithColumns(80);
+  Style.JavaScriptWrapImports = true;
+  verifyFormat("import {\n"
+               "  VeryLongImportsAreAnnoying,\n"
+               "  VeryLongImportsAreAnnoying,\n"
+               "  VeryLongImportsAreAnnoying,\n"
+               "} from 'some/module.js';",
+               Style);
+  verifyFormat("import {\n"
+               "  A,\n"
+               "  A,\n"
+               "} from 'some/module.js';",
+               Style);
+  verifyFormat("export {\n"
+               "  A,\n"
+               "  A,\n"
+               "} from 'some/module.js';",
+               Style);
 }
 
 TEST_F(FormatTestJS, TemplateStrings) {
   // Keeps any whitespace/indentation within the template string.
-  EXPECT_EQ("var x = `hello\n"
+  verifyFormat("var x = `hello\n"
             "     ${  name    }\n"
             "  !`;",
-            format("var x    =    `hello\n"
+            "var x    =    `hello\n"
                    "     ${  name    }\n"
-                   "  !`;"));
+                   "  !`;");
 
   verifyFormat("var x =\n"
                "    `hello ${world}` >= some();",
                getGoogleJSStyleWithColumns(34)); // Barely doesn't fit.
   verifyFormat("var x = `hello ${world}` >= some();",
                getGoogleJSStyleWithColumns(35)); // Barely fits.
-  EXPECT_EQ("var x = `hello\n"
+  verifyFormat("var x = `hellö ${wörld}` >= söme();",
+               getGoogleJSStyleWithColumns(35)); // Fits due to UTF-8.
+  verifyFormat("var x = `hello\n"
             "  ${world}` >=\n"
             "    some();",
-            format("var x =\n"
+            "var x =\n"
                    "    `hello\n"
                    "  ${world}` >= some();",
-                   getGoogleJSStyleWithColumns(21))); // Barely doesn't fit.
-  EXPECT_EQ("var x = `hello\n"
+                   getGoogleJSStyleWithColumns(21)); // Barely doesn't fit.
+  verifyFormat("var x = `hello\n"
             "  ${world}` >= some();",
-            format("var x =\n"
+            "var x =\n"
                    "    `hello\n"
                    "  ${world}` >= some();",
-                   getGoogleJSStyleWithColumns(22))); // Barely fits.
+                   getGoogleJSStyleWithColumns(22)); // Barely fits.
 
   verifyFormat("var x =\n"
                "    `h`;",
                getGoogleJSStyleWithColumns(11));
-  EXPECT_EQ(
-      "var x =\n    `multi\n  line`;",
-      format("var x = `multi\n  line`;", getGoogleJSStyleWithColumns(13)));
+  verifyFormat("var x =\n    `multi\n  line`;", "var x = `multi\n  line`;",
+               getGoogleJSStyleWithColumns(13));
   verifyFormat("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa(\n"
                "    `aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa`);");
+  // Repro for an obscure width-miscounting issue with template strings.
+  verifyFormat(
+      "someLongVariable =\n"
+      "    "
+      "`${logPrefix[11]}/${logPrefix[12]}/${logPrefix[13]}${logPrefix[14]}`;",
+      "someLongVariable = "
+      "`${logPrefix[11]}/${logPrefix[12]}/${logPrefix[13]}${logPrefix[14]}`;");
 
   // Make sure template strings get a proper ColumnWidth assigned, even if they
   // are first token in line.
@@ -920,39 +1174,51 @@ TEST_F(FormatTestJS, TemplateStrings) {
   verifyFormat("var x = `hello` == `hello`;");
 
   // Comments in template strings.
-  EXPECT_EQ("var x = `//a`;\n"
+  verifyFormat("var x = `//a`;\n"
             "var y;",
-            format("var x =\n `//a`;\n"
-                   "var y  ;"));
-  EXPECT_EQ("var x = `/*a`;\n"
-            "var y;",
-            format("var x =\n `/*a`;\n"
-                   "var y;"));
+            "var x =\n `//a`;\n"
+                   "var y  ;");
+  verifyFormat("var x = `/*a`;\n"
+               "var y;",
+               "var x =\n `/*a`;\n"
+               "var y;");
   // Unterminated string literals in a template string.
   verifyFormat("var x = `'`;  // comment with matching quote '\n"
                "var y;");
   verifyFormat("var x = `\"`;  // comment with matching quote \"\n"
                "var y;");
+  verifyFormat("it(`'aaaaaaaaaaaaaaa   `, aaaaaaaaa);",
+               "it(`'aaaaaaaaaaaaaaa   `,   aaaaaaaaa) ;",
+               getGoogleJSStyleWithColumns(40));
   // Backticks in a comment - not a template string.
-  EXPECT_EQ("var x = 1  // `/*a`;\n"
-            "    ;",
-            format("var x =\n 1  // `/*a`;\n"
-                   "    ;"));
-  EXPECT_EQ("/* ` */ var x = 1; /* ` */",
-            format("/* ` */ var x\n= 1; /* ` */"));
+  verifyFormat("var x = 1  // `/*a`;\n"
+               "    ;",
+               "var x =\n 1  // `/*a`;\n"
+               "    ;");
+  verifyFormat("/* ` */ var x = 1; /* ` */", "/* ` */ var x\n= 1; /* ` */");
   // Comment spans multiple template strings.
-  EXPECT_EQ("var x = `/*a`;\n"
-            "var y = ` */ `;",
-            format("var x =\n `/*a`;\n"
-                   "var y =\n ` */ `;"));
+  verifyFormat("var x = `/*a`;\n"
+               "var y = ` */ `;",
+               "var x =\n `/*a`;\n"
+               "var y =\n ` */ `;");
   // Escaped backtick.
-  EXPECT_EQ("var x = ` \\` a`;\n"
-            "var y;",
-            format("var x = ` \\` a`;\n"
-                   "var y;"));
+  verifyFormat("var x = ` \\` a`;\n"
+               "var y;",
+               "var x = ` \\` a`;\n"
+               "var y;");
 }
 
-TEST_F(FormatTestJS, CastSyntax) { verifyFormat("var x = <type>foo;"); }
+TEST_F(FormatTestJS, CastSyntax) {
+  verifyFormat("var x = <type>foo;");
+  verifyFormat("var x = foo as type;");
+  verifyFormat("let x = (a + b) as\n"
+               "    LongTypeIsLong;",
+               getGoogleJSStyleWithColumns(20));
+  verifyFormat("foo = <Bar[]>[\n"
+               "  1,  //\n"
+               "  2\n"
+               "];");
+}
 
 TEST_F(FormatTestJS, TypeArguments) {
   verifyFormat("class X<Y> {}");
@@ -987,7 +1253,6 @@ TEST_F(FormatTestJS, OptionalTypes) {
   verifyFormat("interface X {\n"
                "  y?(): z;\n"
                "}");
-  verifyFormat("x ? 1 : 2;");
   verifyFormat("constructor({aa}: {\n"
                "  aa?: string,\n"
                "  aaaaaaaa?: string,\n"
@@ -1016,6 +1281,81 @@ TEST_F(FormatTestJS, WrapAfterParen) {
                getGoogleJSStyleWithColumns(40));
   verifyFormat("while (aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa &&\n"
                "       bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb) {\n}");
+}
+
+TEST_F(FormatTestJS, JSDocAnnotations) {
+  verifyFormat("/**\n"
+               " * @export {this.is.a.long.path.to.a.Type}\n"
+               " */",
+               "/**\n"
+               " * @export {this.is.a.long.path.to.a.Type}\n"
+               " */",
+               getGoogleJSStyleWithColumns(20));
+}
+
+TEST_F(FormatTestJS, RequoteStringsSingle) {
+  verifyFormat("var x = 'foo';", "var x = \"foo\";");
+  verifyFormat("var x = 'fo\\'o\\'';", "var x = \"fo'o'\";");
+  verifyFormat("var x = 'fo\\'o\\'';", "var x = \"fo\\'o'\";");
+  verifyFormat(
+      "var x =\n"
+      "    'foo\\'';",
+      // Code below is 15 chars wide, doesn't fit into the line with the
+      // \ escape added.
+      "var x = \"foo'\";", getGoogleJSStyleWithColumns(15));
+  // Removes no-longer needed \ escape from ".
+  verifyFormat("var x = 'fo\"o';", "var x = \"fo\\\"o\";");
+  // Code below fits into 15 chars *after* removing the \ escape.
+  verifyFormat("var x = 'fo\"o';", "var x = \"fo\\\"o\";",
+               getGoogleJSStyleWithColumns(15));
+  verifyFormat("// clang-format off\n"
+               "let x = \"double\";\n"
+               "// clang-format on\n"
+               "let x = 'single';\n",
+               "// clang-format off\n"
+               "let x = \"double\";\n"
+               "// clang-format on\n"
+               "let x = \"single\";\n");
+}
+
+TEST_F(FormatTestJS, RequoteStringsDouble) {
+  FormatStyle DoubleQuotes = getGoogleStyle(FormatStyle::LK_JavaScript);
+  DoubleQuotes.JavaScriptQuotes = FormatStyle::JSQS_Double;
+  verifyFormat("var x = \"foo\";", DoubleQuotes);
+  verifyFormat("var x = \"foo\";", "var x = 'foo';", DoubleQuotes);
+  verifyFormat("var x = \"fo'o\";", "var x = 'fo\\'o';", DoubleQuotes);
+}
+
+TEST_F(FormatTestJS, RequoteStringsLeave) {
+  FormatStyle LeaveQuotes = getGoogleStyle(FormatStyle::LK_JavaScript);
+  LeaveQuotes.JavaScriptQuotes = FormatStyle::JSQS_Leave;
+  verifyFormat("var x = \"foo\";", LeaveQuotes);
+  verifyFormat("var x = 'foo';", LeaveQuotes);
+}
+
+TEST_F(FormatTestJS, SupportShebangLines) {
+  verifyFormat("#!/usr/bin/env node\n"
+               "var x = hello();",
+               "#!/usr/bin/env node\n"
+               "var x   =  hello();");
+}
+
+TEST_F(FormatTestJS, NonNullAssertionOperator) {
+  verifyFormat("let x = foo!.bar();\n");
+  verifyFormat("let x = foo ? bar! : baz;\n");
+  verifyFormat("let x = !foo;\n");
+  verifyFormat("let x = foo[0]!;\n");
+  verifyFormat("let x = (foo)!;\n");
+  verifyFormat("let x = {foo: 1}!;\n");
+}
+
+TEST_F(FormatTestJS, Conditional) {
+  verifyFormat("y = x ? 1 : 2;");
+  verifyFormat("x ? 1: 2;"); // Known issue with top level conditionals.
+  verifyFormat("class Foo {\n"
+               "  field = true ? 1 : 2;\n"
+               "  method(a = true ? 1 : 2) {}\n"
+               "}");
 }
 
 } // end namespace tooling

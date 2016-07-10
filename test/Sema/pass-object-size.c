@@ -33,13 +33,13 @@ void TakeFnOvl(void (*)(int *)) overloaded;
 
 void NotOverloaded(void *p PS(0));
 void IsOverloaded(void *p PS(0)) overloaded;
-void IsOverloaded(char *p) overloaded;
+void IsOverloaded(char *p) overloaded; // char* inestead of void* is intentional
 void FunctionPtrs() {
   void (*p)(void *) = NotOverloaded; //expected-error{{cannot take address of function 'NotOverloaded' because parameter 1 has pass_object_size attribute}}
   void (*p2)(void *) = &NotOverloaded; //expected-error{{cannot take address of function 'NotOverloaded' because parameter 1 has pass_object_size attribute}}
 
-  void (*p3)(void *) = IsOverloaded; //expected-error{{initializing 'void (*)(void *)' with an expression of incompatible type '<overloaded function type>'}} expected-note@-6{{candidate address cannot be taken because parameter 1 has pass_object_size attribute}} expected-note@-5{{type mismatch}}
-  void (*p4)(void *) = &IsOverloaded; //expected-error{{initializing 'void (*)(void *)' with an expression of incompatible type '<overloaded function type>'}} expected-note@-7{{candidate address cannot be taken because parameter 1 has pass_object_size attribute}} expected-note@-6{{type mismatch}}
+  void (*p3)(void *) = IsOverloaded; //expected-warning{{incompatible pointer types initializing 'void (*)(void *)' with an expression of type '<overloaded function type>'}} expected-note@-6{{candidate address cannot be taken because parameter 1 has pass_object_size attribute}} expected-note@-5{{type mismatch}}
+  void (*p4)(void *) = &IsOverloaded; //expected-warning{{incompatible pointer types initializing 'void (*)(void *)' with an expression of type '<overloaded function type>'}} expected-note@-7{{candidate address cannot be taken because parameter 1 has pass_object_size attribute}} expected-note@-6{{type mismatch}}
 
   void (*p5)(char *) = IsOverloaded;
   void (*p6)(char *) = &IsOverloaded;
@@ -49,4 +49,8 @@ void FunctionPtrs() {
 
   TakeFnOvl(NotOverloaded); //expected-error{{cannot take address of function 'NotOverloaded' because parameter 1 has pass_object_size attribute}}
   TakeFnOvl(&NotOverloaded); //expected-error{{cannot take address of function 'NotOverloaded' because parameter 1 has pass_object_size attribute}}
+
+  int P;
+  (&NotOverloaded)(&P); //expected-error{{cannot take address of function 'NotOverloaded' because parameter 1 has pass_object_size attribute}}
+  (&IsOverloaded)(&P); //expected-error{{no matching function}} expected-note@35{{candidate address cannot be taken because parameter 1 has pass_object_size attribute}} expected-note@36{{candidate function not viable: no known conversion from 'int *' to 'char *' for 1st argument}}
 }

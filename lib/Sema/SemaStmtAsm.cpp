@@ -623,16 +623,12 @@ bool Sema::LookupInlineAsmField(StringRef Base, StringRef Member,
 
   if (!LookupName(BaseResult, getCurScope()))
     return true;
-
-  LookupResult CurrBaseResult(BaseResult);
-
+  
+  if(!BaseResult.isSingleResult())
+    return true;
+  NamedDecl *FoundDecl = BaseResult.getFoundDecl();
   for (StringRef NextMember : Members) {
-
-    if (!CurrBaseResult.isSingleResult())
-      return true;
-
     const RecordType *RT = nullptr;
-    NamedDecl *FoundDecl = CurrBaseResult.getFoundDecl();
     if (VarDecl *VD = dyn_cast<VarDecl>(FoundDecl))
       RT = VD->getType()->getAs<RecordType>();
     else if (TypedefNameDecl *TD = dyn_cast<TypedefNameDecl>(FoundDecl)) {
@@ -655,12 +651,14 @@ bool Sema::LookupInlineAsmField(StringRef Base, StringRef Member,
     if (!LookupQualifiedName(FieldResult, RT->getDecl()))
       return true;
 
+    if (!FieldResult.isSingleResult())
+      return true;
+    FoundDecl = FieldResult.getFoundDecl();
+
     // FIXME: Handle IndirectFieldDecl?
-    FieldDecl *FD = dyn_cast<FieldDecl>(FieldResult.getFoundDecl());
+    FieldDecl *FD = dyn_cast<FieldDecl>(FoundDecl);
     if (!FD)
       return true;
-
-    CurrBaseResult = FieldResult;
 
     const ASTRecordLayout &RL = Context.getASTRecordLayout(RT->getDecl());
     unsigned i = FD->getFieldIndex();
@@ -672,7 +670,7 @@ bool Sema::LookupInlineAsmField(StringRef Base, StringRef Member,
 }
 
 ExprResult
-Sema::LookupInlineAsmVarDeclField(Expr *E, StringRef Member, unsigned &Offset,
+Sema::LookupInlineAsmVarDeclField(Expr *E, StringRef Member,
                                   llvm::InlineAsmIdentifierInfo &Info,
                                   SourceLocation AsmLoc) {
   Info.clear();
@@ -705,9 +703,6 @@ Sema::LookupInlineAsmVarDeclField(Expr *E, StringRef Member, unsigned &Offset,
     FD = dyn_cast<IndirectFieldDecl>(FieldResult.getFoundDecl());
   if (!FD)
     return ExprResult();
-
-  Offset = (unsigned)Context.toCharUnitsFromBits(Context.getFieldOffset(FD))
-               .getQuantity();
 
   // Make an Expr to thread through OpDecl.
   ExprResult Result = BuildMemberReferenceExpr(

@@ -10,11 +10,11 @@
 #ifndef LLVM_CLANG_LIB_DRIVER_TOOLS_H
 #define LLVM_CLANG_LIB_DRIVER_TOOLS_H
 
+#include "clang/Basic/DebugInfoOptions.h"
 #include "clang/Basic/VersionTuple.h"
 #include "clang/Driver/Tool.h"
 #include "clang/Driver/Types.h"
 #include "clang/Driver/Util.h"
-#include "clang/Frontend/CodeGenOptions.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/Option/Option.h"
 #include "llvm/Support/Compiler.h"
@@ -84,6 +84,10 @@ private:
                         llvm::opt::ArgStringList &CmdArgs) const;
   void AddHexagonTargetArgs(const llvm::opt::ArgList &Args,
                             llvm::opt::ArgStringList &CmdArgs) const;
+  void AddLanaiTargetArgs(const llvm::opt::ArgList &Args,
+                          llvm::opt::ArgStringList &CmdArgs) const;
+  void AddWebAssemblyTargetArgs(const llvm::opt::ArgList &Args,
+                                llvm::opt::ArgStringList &CmdArgs) const;
 
   enum RewriteKind { RK_None, RK_Fragile, RK_NonFragile };
 
@@ -91,9 +95,9 @@ private:
                                  llvm::opt::ArgStringList &cmdArgs,
                                  RewriteKind rewrite) const;
 
-  void AddClangCLArgs(const llvm::opt::ArgList &Args,
+  void AddClangCLArgs(const llvm::opt::ArgList &Args, types::ID InputType,
                       llvm::opt::ArgStringList &CmdArgs,
-                      enum CodeGenOptions::DebugInfoKind *DebugInfoKind,
+                      codegenoptions::DebugInfoKind *DebugInfoKind,
                       bool *EmitCodeView) const;
 
   visualstudio::Compiler *getCLFallback() const;
@@ -151,6 +155,10 @@ public:
   Common(const char *Name, const char *ShortName, const ToolChain &TC)
       : GnuTool(Name, ShortName, TC) {}
 
+  // A gcc tool has an "integrated" assembler that it will call to produce an
+  // object. Let it use that assembler so that we don't have to deal with
+  // assembly syntax incompatibilities.
+  bool hasIntegratedAssembler() const override { return true; }
   void ConstructJob(Compilation &C, const JobAction &JA,
                     const InputInfo &Output, const InputInfoList &Inputs,
                     const llvm::opt::ArgList &TCArgs,
@@ -236,7 +244,7 @@ namespace amdgpu {
 
 class LLVM_LIBRARY_VISIBILITY Linker : public GnuTool {
 public:
-  Linker(const ToolChain &TC) : GnuTool("amdgpu::Linker", "lld", TC) {}
+  Linker(const ToolChain &TC) : GnuTool("amdgpu::Linker", "ld.lld", TC) {}
   bool isLinkJob() const override { return true; }
   bool hasIntegratedCPP() const override { return false; }
   void ConstructJob(Compilation &C, const JobAction &JA,
@@ -285,6 +293,7 @@ enum class FloatABI {
 };
 
 NanEncoding getSupportedNanEncoding(StringRef &CPU);
+bool hasCompactBranches(StringRef &CPU);
 void getMipsCPUAndABI(const llvm::opt::ArgList &Args,
                       const llvm::Triple &Triple, StringRef &CPUName,
                       StringRef &ABIName);
@@ -293,6 +302,7 @@ std::string getMipsABILibSuffix(const llvm::opt::ArgList &Args,
 bool hasMipsAbiArg(const llvm::opt::ArgList &Args, const char *Value);
 bool isUCLibc(const llvm::opt::ArgList &Args);
 bool isNaN2008(const llvm::opt::ArgList &Args, const llvm::Triple &Triple);
+bool isFP64ADefault(const llvm::Triple &Triple, StringRef CPUName);
 bool isFPXXDefault(const llvm::Triple &Triple, StringRef CPUName,
                    StringRef ABIName, mips::FloatABI FloatABI);
 bool shouldUseFPXX(const llvm::opt::ArgList &Args, const llvm::Triple &Triple,
@@ -676,7 +686,8 @@ public:
 
 /// Visual studio tools.
 namespace visualstudio {
-VersionTuple getMSVCVersion(const Driver *D, const llvm::Triple &Triple,
+VersionTuple getMSVCVersion(const Driver *D, const ToolChain &TC,
+                            const llvm::Triple &Triple,
                             const llvm::opt::ArgList &Args, bool IsWindowsMSVC);
 
 class LLVM_LIBRARY_VISIBILITY Linker : public Tool {
@@ -768,6 +779,16 @@ enum class FloatABI {
 
 FloatABI getPPCFloatABI(const Driver &D, const llvm::opt::ArgList &Args);
 } // end namespace ppc
+
+namespace sparc {
+enum class FloatABI {
+  Invalid,
+  Soft,
+  Hard,
+};
+
+FloatABI getSparcFloatABI(const Driver &D, const llvm::opt::ArgList &Args);
+} // end namespace sparc
 
 namespace XCore {
 // For XCore, we do not need to instantiate tools for PreProcess, PreCompile and
@@ -898,6 +919,41 @@ public:
                     const char *LinkingOutput) const override;
 };
 } // end namespace PS4cpu
+
+namespace NVPTX {
+
+// Run ptxas, the NVPTX assembler.
+class LLVM_LIBRARY_VISIBILITY Assembler : public Tool {
+ public:
+   Assembler(const ToolChain &TC)
+       : Tool("NVPTX::Assembler", "ptxas", TC, RF_Full, llvm::sys::WEM_UTF8,
+              "--options-file") {}
+
+   bool hasIntegratedCPP() const override { return false; }
+
+   void ConstructJob(Compilation &C, const JobAction &JA,
+                     const InputInfo &Output, const InputInfoList &Inputs,
+                     const llvm::opt::ArgList &TCArgs,
+                     const char *LinkingOutput) const override;
+};
+
+// Runs fatbinary, which combines GPU object files ("cubin" files) and/or PTX
+// assembly into a single output file.
+class LLVM_LIBRARY_VISIBILITY Linker : public Tool {
+ public:
+   Linker(const ToolChain &TC)
+       : Tool("NVPTX::Linker", "fatbinary", TC, RF_Full, llvm::sys::WEM_UTF8,
+              "--options-file") {}
+
+   bool hasIntegratedCPP() const override { return false; }
+
+   void ConstructJob(Compilation &C, const JobAction &JA,
+                     const InputInfo &Output, const InputInfoList &Inputs,
+                     const llvm::opt::ArgList &TCArgs,
+                     const char *LinkingOutput) const override;
+};
+
+}  // end namespace NVPTX
 
 } // end namespace tools
 } // end namespace driver

@@ -4,6 +4,11 @@
 int a;
 // CHECK-DAG: @"\01?a@@3HA"
 
+extern "C++" {
+static int __attribute__((used)) ignore_transparent_context;
+// CHECK-DAG: @ignore_transparent_context
+}
+
 namespace N {
   int b;
 // CHECK-DAG: @"\01?b@N@@3HA"
@@ -453,4 +458,29 @@ void f(_Atomic(int)) {}
 namespace Complex {
 // CHECK-DAG: define void @"\01?f@Complex@@YAXU?$_Complex@H@__clang@@@Z"(
 void f(_Complex int) {}
+}
+
+namespace PR26029 {
+template <class>
+struct L {
+  L() {}
+};
+template <class>
+class H;
+struct M : L<H<int *> > {};
+
+template <class>
+struct H {};
+
+template <class GT>
+void m_fn3() {
+  (H<GT *>());
+  M();
+}
+
+void runOnFunction() {
+  L<H<int *> > b;
+  m_fn3<int>();
+}
+// CHECK-DAG: call {{.*}} @"\01??0?$L@V?$H@PAH@PR26029@@@PR26029@@QAE@XZ"
 }
