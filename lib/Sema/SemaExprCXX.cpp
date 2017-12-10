@@ -961,32 +961,26 @@ static QualType adjustCVQualifiersForCXXThisWithinLambda(
 QualType Sema::getCurrentThisType() {
   DeclContext *DC = getFunctionLevelDeclContext();
   QualType ThisTy = CXXThisTypeOverride;
+
   if (CXXMethodDecl *method = dyn_cast<CXXMethodDecl>(DC)) {
     if (method && method->isInstance())
       ThisTy = method->getThisType(Context);
   }
-  if (ThisTy.isNull()) {
-    if (isGenericLambdaCallOperatorSpecialization(CurContext) &&
-        CurContext->getParent()->getParent()->isRecord()) {
-      // This is a generic lambda call operator that is being instantiated
-      // within a default initializer - so use the enclosing class as 'this'.
-      // There is no enclosing member function to retrieve the 'this' pointer
-      // from.
 
-      // FIXME: This looks wrong. If we're in a lambda within a lambda within a
-      // default member initializer, we need to recurse up more parents to find
-      // the right context. Looks like we should be walking up to the parent of
-      // the closure type, checking whether that is itself a lambda, and if so,
-      // recursing, until we reach a class or a function that isn't a lambda
-      // call operator. And we should accumulate the constness of *this on the
-      // way.
+  if (ThisTy.isNull() && isLambdaCallOperator(CurContext) &&
+      !ActiveTemplateInstantiations.empty()) {
 
-      QualType ClassTy = Context.getTypeDeclType(
-          cast<CXXRecordDecl>(CurContext->getParent()->getParent()));
-      // There are no cv-qualifiers for 'this' within default initializers, 
-      // per [expr.prim.general]p4.
-      ThisTy = Context.getPointerType(ClassTy);
-    }
+    assert(isa<CXXRecordDecl>(DC) &&
+           "Trying to get 'this' type from static method?");
+
+    // This is a lambda call operator that is being instantiated as a default
+    // initializer. DC must point to the enclosing class type, so we can recover
+    // the 'this' type from it.
+
+    QualType ClassTy = Context.getTypeDeclType(cast<CXXRecordDecl>(DC));
+    // There are no cv-qualifiers for 'this' within default initializers,
+    // per [expr.prim.general]p4.
+    ThisTy = Context.getPointerType(ClassTy);
   }
 
   // If we are within a lambda's call operator, the cv-qualifiers of 'this'
@@ -4227,9 +4221,12 @@ static bool EvaluateUnaryTypeTrait(Sema &Self, TypeTrait UTT,
         // A template constructor is never a copy constructor.
         // FIXME: However, it may actually be selected at the actual overload
         // resolution point.
-        if (isa<FunctionTemplateDecl>(ND))
+        if (isa<FunctionTemplateDecl>(ND->getUnderlyingDecl()))
           continue;
-        const CXXConstructorDecl *Constructor = cast<CXXConstructorDecl>(ND);
+        // UsingDecl itself is not a constructor
+        if (isa<UsingDecl>(ND))
+          continue;
+        auto *Constructor = cast<CXXConstructorDecl>(ND->getUnderlyingDecl());
         if (Constructor->isCopyConstructor(FoundTQs)) {
           FoundConstructor = true;
           const FunctionProtoType *CPT
@@ -4263,9 +4260,12 @@ static bool EvaluateUnaryTypeTrait(Sema &Self, TypeTrait UTT,
       bool FoundConstructor = false;
       for (const auto *ND : Self.LookupConstructors(RD)) {
         // FIXME: In C++0x, a constructor template can be a default constructor.
-        if (isa<FunctionTemplateDecl>(ND))
+        if (isa<FunctionTemplateDecl>(ND->getUnderlyingDecl()))
           continue;
-        const CXXConstructorDecl *Constructor = cast<CXXConstructorDecl>(ND);
+        // UsingDecl itself is not a constructor
+        if (isa<UsingDecl>(ND))
+          continue;
+        auto *Constructor = cast<CXXConstructorDecl>(ND->getUnderlyingDecl());
         if (Constructor->isDefaultConstructor()) {
           FoundConstructor = true;
           const FunctionProtoType *CPT
@@ -6588,10 +6588,16 @@ static inline bool VariableCanNeverBeAConstantExpression(VarDecl *Var,
 static void CheckIfAnyEnclosingLambdasMustCaptureAnyPotentialCaptures(
     Expr *const FE, LambdaScopeInfo *const CurrentLSI, Sema &S) {
 
-  assert(!S.isUnevaluatedContext());  
-  assert(S.CurContext->isDependentContext()); 
-  assert(CurrentLSI->CallOperator == S.CurContext && 
+  assert(!S.isUnevaluatedContext());
+  assert(S.CurContext->isDependentContext());
+#ifndef NDEBUG
+  DeclContext *DC = S.CurContext;
+  while (DC && isa<CapturedDecl>(DC))
+    DC = DC->getParent();
+  assert(
+      CurrentLSI->CallOperator == DC &&
       "The current call operator must be synchronized with Sema's CurContext");
+#endif // NDEBUG
 
   const bool IsFullExprInstantiationDependent = FE->isInstantiationDependent();
 
@@ -7057,7 +7063,8 @@ ExprResult Sema::ActOnFinishFullExpr(Expr *FE, SourceLocation CC,
   // and then the full-expression +n + ({ 0; }); ends, but it's too late 
   // for us to see that we need to capture n after all.
 
-  LambdaScopeInfo *const CurrentLSI = getCurLambda();
+  LambdaScopeInfo *const CurrentLSI =
+      getCurLambda(/*IgnoreCapturedRegions=*/true);
   // FIXME: PR 17877 showed that getCurLambda() can return a valid pointer 
   // even if CurContext is not a lambda call operator. Refer to that Bug Report
   // for an example of the code that might cause this asynchrony.  
@@ -7072,7 +7079,10 @@ ExprResult Sema::ActOnFinishFullExpr(Expr *FE, SourceLocation CC,
   //     constructor/destructor.
   //  - Teach the handful of places that iterate over FunctionScopes to 
   //    stop at the outermost enclosing lexical scope."
-  const bool IsInLambdaDeclContext = isLambdaCallOperator(CurContext);
+  DeclContext *DC = CurContext;
+  while (DC && isa<CapturedDecl>(DC))
+    DC = DC->getParent();
+  const bool IsInLambdaDeclContext = isLambdaCallOperator(DC);
   if (IsInLambdaDeclContext && CurrentLSI &&
       CurrentLSI->hasPotentialCaptures() && !FullExpr.isInvalid())
     CheckIfAnyEnclosingLambdasMustCaptureAnyPotentialCaptures(FE, CurrentLSI,

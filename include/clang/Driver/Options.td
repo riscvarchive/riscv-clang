@@ -516,7 +516,8 @@ def fno_coverage_mapping : Flag<["-"], "fno-coverage-mapping">,
     Group<f_Group>, Flags<[DriverOption]>,
     HelpText<"Disable code coverage analysis">;
 def fprofile_generate : Flag<["-"], "fprofile-generate">,
-    Alias<fprofile_instr_generate>;
+    Group<f_Group>, Flags<[DriverOption]>,
+    HelpText<"Generate instrumented code to collect execution counts into default.profraw (overridden by LLVM_PROFILE_FILE env var)">;
 def fprofile_generate_EQ : Joined<["-"], "fprofile-generate=">,
     Group<f_Group>, Flags<[DriverOption]>, MetaVarName<"<directory>">,
     HelpText<"Generate instrumented code to collect execution counts into <directory>/default.profraw (overridden by LLVM_PROFILE_FILE env var)">;
@@ -529,7 +530,8 @@ def fno_profile_instr_generate : Flag<["-"], "fno-profile-instr-generate">,
     Group<f_Group>, Flags<[DriverOption]>,
     HelpText<"Disable generation of profile instrumentation.">;
 def fno_profile_generate : Flag<["-"], "fno-profile-generate">,
-    Alias<fno_profile_instr_generate>;
+    Group<f_Group>, Flags<[DriverOption]>,
+    HelpText<"Disable generation of profile instrumentation.">;
 def fno_profile_instr_use : Flag<["-"], "fno-profile-instr-use">,
     Group<f_Group>, Flags<[DriverOption]>,
     HelpText<"Disable using instrumentation data for profile-guided optimization">;
@@ -781,6 +783,21 @@ def finput_charset_EQ : Joined<["-"], "finput-charset=">, Group<f_Group>;
 def fexec_charset_EQ : Joined<["-"], "fexec-charset=">, Group<f_Group>;
 def finstrument_functions : Flag<["-"], "finstrument-functions">, Group<f_Group>, Flags<[CC1Option]>,
   HelpText<"Generate calls to instrument function entry and exit">;
+
+def fxray_instrument : Flag<["-"], "fxray-instrument">, Group<f_Group>,
+  Flags<[CC1Option]>,
+  HelpText<"Generate XRay instrumentation sleds on function entry and exit">;
+def fnoxray_instrument : Flag<["-"], "fno-xray-instrument">, Group<f_Group>,
+  Flags<[CC1Option]>;
+
+def fxray_instruction_threshold_EQ :
+  JoinedOrSeparate<["-"], "fxray-instruction-threshold=">,
+  Group<f_Group>, Flags<[CC1Option]>,
+  HelpText<"Sets the minimum function size to instrument with XRay">;
+def fxray_instruction_threshold_ :
+  JoinedOrSeparate<["-"], "fxray-instruction-threshold">,
+  Group<f_Group>, Flags<[CC1Option]>;
+
 def flat__namespace : Flag<["-"], "flat_namespace">;
 def flax_vector_conversions : Flag<["-"], "flax-vector-conversions">, Group<f_Group>;
 def flimited_precision_EQ : Joined<["-"], "flimited-precision=">, Group<f_Group>;
@@ -1229,7 +1246,7 @@ def fdebug_prefix_map_EQ
 def g_Flag : Flag<["-"], "g">, Group<g_Group>,
   HelpText<"Generate source-level debug information">;
 def gline_tables_only : Flag<["-"], "gline-tables-only">, Group<gN_Group>,
-  HelpText<"Emit debug line number tables only">;
+  Flags<[CoreOption]>, HelpText<"Emit debug line number tables only">;
 def gmlt : Flag<["-"], "gmlt">, Alias<gline_tables_only>;
 def g0 : Flag<["-"], "g0">, Group<gN_Group>;
 def g1 : Flag<["-"], "g1">, Group<gN_Group>, Alias<gline_tables_only>;

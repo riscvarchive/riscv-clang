@@ -5975,8 +5975,12 @@ EnableIfAttr *Sema::CheckEnableIf(FunctionDecl *Function, ArrayRef<Expr *> Args,
   SmallVector<Expr *, 16> ConvertedArgs;
   bool InitializationFailed = false;
 
+  // Ignore any variadic parameters. Converting them is pointless, since the
+  // user can't refer to them in the enable_if condition.
+  unsigned ArgSizeNoVarargs = std::min(Function->param_size(), Args.size());
+
   // Convert the arguments.
-  for (unsigned I = 0, E = Args.size(); I != E; ++I) {
+  for (unsigned I = 0; I != ArgSizeNoVarargs; ++I) {
     ExprResult R;
     if (I == 0 && !MissingImplicitThis && isa<CXXMethodDecl>(Function) &&
         !cast<CXXMethodDecl>(Function)->isStatic() &&
@@ -12407,8 +12411,7 @@ Sema::BuildCallToMemberFunction(Scope *S, Expr *MemExprE,
   if (CXXDestructorDecl *DD =
           dyn_cast<CXXDestructorDecl>(TheCall->getMethodDecl())) {
     // a->A::f() doesn't go through the vtable, except in AppleKext mode.
-    bool CallCanBeVirtual = !cast<MemberExpr>(NakedMemExpr)->hasQualifier() ||
-                            getLangOpts().AppleKext;
+    bool CallCanBeVirtual = !MemExpr->hasQualifier() || getLangOpts().AppleKext;
     CheckVirtualDtorCall(DD, MemExpr->getLocStart(), /*IsDelete=*/false,
                          CallCanBeVirtual, /*WarnOnNonAbstractTypes=*/true,
                          MemExpr->getMemberLoc());

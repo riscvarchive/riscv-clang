@@ -4522,6 +4522,11 @@ ExprResult Sema::BuildCXXDefaultArgExpr(SourceLocation CallLoc,
                                MutiLevelArgList.getInnermost());
     if (Inst.isInvalid())
       return ExprError();
+    if (Inst.isAlreadyInstantiating()) {
+      Diag(Param->getLocStart(), diag::err_recursive_default_argument) << FD;
+      Param->setInvalidDecl();
+      return ExprError();
+    }
 
     ExprResult Result;
     {
@@ -8567,7 +8572,7 @@ static void DiagnoseBadShiftValues(Sema& S, ExprResult &LHS, ExprResult &RHS,
 
   // If LHS does not have a signed type and non-negative value
   // then, the behavior is undefined. Warn about it.
-  if (Left.isNegative()) {
+  if (Left.isNegative() && !S.getLangOpts().isSignedOverflowDefined()) {
     S.DiagRuntimeBehavior(Loc, LHS.get(),
                           S.PDiag(diag::warn_shift_lhs_negative)
                             << LHS.get()->getSourceRange());
@@ -10534,13 +10539,6 @@ QualType Sema::CheckAddressOfOperand(ExprResult &OrigOp, SourceLocation OpLoc) {
   if (op->getType()->isObjCObjectType())
     return Context.getObjCObjectPointerType(op->getType());
 
-  // OpenCL v2.0 s6.12.5 - The unary operators & cannot be used with a block.
-  if (getLangOpts().OpenCL && OrigOp.get()->getType()->isBlockPointerType()) {
-    Diag(OpLoc, diag::err_typecheck_unary_expr) << OrigOp.get()->getType()
-                                                << op->getSourceRange();
-    return QualType();
-  }
-
   return Context.getPointerType(op->getType());
 }
 
@@ -10584,12 +10582,6 @@ static QualType CheckIndirectionOperand(Sema &S, Expr *Op, ExprValueKind &VK,
   if (const PointerType *PT = OpTy->getAs<PointerType>())
   {
     Result = PT->getPointeeType();
-    // OpenCL v2.0 s6.12.5 - The unary operators * cannot be used with a block.
-    if (S.getLangOpts().OpenCLVersion >= 200 && Result->isBlockPointerType()) {
-      S.Diag(OpLoc, diag::err_opencl_dereferencing) << OpTy
-                                                    << Op->getSourceRange();
-      return QualType();
-    }
   }
   else if (const ObjCObjectPointerType *OPT =
              OpTy->getAs<ObjCObjectPointerType>())
@@ -10828,15 +10820,26 @@ ExprResult Sema::CreateBuiltinBinOp(SourceLocation OpLoc,
   }
 
   if (getLangOpts().OpenCL) {
+    QualType LHSTy = LHSExpr->getType();
+    QualType RHSTy = RHSExpr->getType();
     // OpenCLC v2.0 s6.13.11.1 allows atomic variables to be initialized by
     // the ATOMIC_VAR_INIT macro.
-    if (LHSExpr->getType()->isAtomicType() ||
-        RHSExpr->getType()->isAtomicType()) {
+    if (LHSTy->isAtomicType() || RHSTy->isAtomicType()) {
       SourceRange SR(LHSExpr->getLocStart(), RHSExpr->getLocEnd());
       if (BO_Assign == Opc)
         Diag(OpLoc, diag::err_atomic_init_constant) << SR;
       else
         ResultTy = InvalidOperands(OpLoc, LHS, RHS);
+      return ExprError();
+    }
+
+    // OpenCL special types - image, sampler, pipe, and blocks are to be used
+    // only with a builtin functions and therefore should be disallowed here.
+    if (LHSTy->isImageType() || RHSTy->isImageType() ||
+        LHSTy->isSamplerT() || RHSTy->isSamplerT() ||
+        LHSTy->isPipeType() || RHSTy->isPipeType() ||
+        LHSTy->isBlockPointerType() || RHSTy->isBlockPointerType()) {
+      ResultTy = InvalidOperands(OpLoc, LHS, RHS);
       return ExprError();
     }
   }
@@ -11309,8 +11312,13 @@ ExprResult Sema::CreateBuiltinUnaryOp(SourceLocation OpLoc,
   ExprObjectKind OK = OK_Ordinary;
   QualType resultType;
   if (getLangOpts().OpenCL) {
+    QualType Ty = InputExpr->getType();
     // The only legal unary operation for atomics is '&'.
-    if (Opc != UO_AddrOf && InputExpr->getType()->isAtomicType()) {
+    if ((Opc != UO_AddrOf && Ty->isAtomicType()) ||
+    // OpenCL special types - image, sampler, pipe, and blocks are to be used
+    // only with a builtin functions and therefore should be disallowed here.
+        (Ty->isImageType() || Ty->isSamplerT() || Ty->isPipeType()
+        || Ty->isBlockPointerType())) {
       return ExprError(Diag(OpLoc, diag::err_typecheck_unary_expr)
                        << InputExpr->getType()
                        << Input.get()->getSourceRange());
@@ -13877,7 +13885,8 @@ static void DoMarkVarDeclReferenced(Sema &SemaRef, SourceLocation Loc,
         (SemaRef.CurContext != Var->getDeclContext() &&
          Var->getDeclContext()->isFunctionOrMethod() && Var->hasLocalStorage());
     if (RefersToEnclosingScope) {
-      if (LambdaScopeInfo *const LSI = SemaRef.getCurLambda()) {
+      if (LambdaScopeInfo *const LSI =
+              SemaRef.getCurLambda(/*IgnoreCapturedRegions=*/true)) {
         // If a variable could potentially be odr-used, defer marking it so
         // until we finish analyzing the full expression for any
         // lvalue-to-rvalue
@@ -15079,4 +15088,28 @@ Sema::ActOnObjCBoolLiteral(SourceLocation OpLoc, tok::TokenKind Kind) {
     BoolT = Context.getBOOLType();
   return new (Context)
       ObjCBoolLiteralExpr(Kind == tok::kw___objc_yes, BoolT, OpLoc);
+}
+
+ExprResult Sema::ActOnObjCAvailabilityCheckExpr(
+    llvm::ArrayRef<AvailabilitySpec> AvailSpecs, SourceLocation AtLoc,
+    SourceLocation RParen) {
+
+  StringRef Platform = getASTContext().getTargetInfo().getPlatformName();
+
+  auto Spec = std::find_if(AvailSpecs.begin(), AvailSpecs.end(),
+                           [&](const AvailabilitySpec &Spec) {
+                             return Spec.getPlatform() == Platform;
+                           });
+
+  VersionTuple Version;
+  if (Spec != AvailSpecs.end())
+    Version = Spec->getVersion();
+  else
+    // This is the '*' case in @available. We should diagnose this; the
+    // programmer should explicitly account for this case if they target this
+    // platform.
+    Diag(AtLoc, diag::warn_available_using_star_case) << RParen << Platform;
+
+  return new (Context)
+      ObjCAvailabilityCheckExpr(Version, AtLoc, RParen, Context.BoolTy);
 }

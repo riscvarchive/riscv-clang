@@ -5729,7 +5729,6 @@ void NVPTXTargetCodeGenInfo::addNVVMMetadata(llvm::Function *F, StringRef Name,
   MD->addOperand(llvm::MDNode::get(Ctx, MDVals));
 }
 }
-
 //===----------------------------------------------------------------------===//
 // RISCV ABI Implementation
 //===----------------------------------------------------------------------===//

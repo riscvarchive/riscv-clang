@@ -2014,7 +2014,11 @@ enum CXCursorKind {
    */
   CXCursor_OMPArraySectionExpr           = 147,
 
-  CXCursor_LastExpr                      = CXCursor_OMPArraySectionExpr,
+  /** \brief Represents an @available(...) check.
+   */
+  CXCursor_ObjCAvailabilityCheckExpr     = 148,
+
+  CXCursor_LastExpr                      = CXCursor_ObjCAvailabilityCheckExpr,
 
   /* Statements */
   CXCursor_FirstStmt                     = 200,
@@ -2317,7 +2321,11 @@ enum CXCursorKind {
    */
   CXCursor_OMPDistributeSimdDirective = 268,
 
-  CXCursor_LastStmt = CXCursor_OMPDistributeSimdDirective,
+  /** \brief OpenMP target parallel for simd directive.
+   */
+  CXCursor_OMPTargetParallelForSimdDirective = 269,
+
+  CXCursor_LastStmt = CXCursor_OMPTargetParallelForSimdDirective,
 
   /**
    * \brief Cursor that represents the translation unit itself.

@@ -16,7 +16,9 @@
 #define LLVM_CLANG_SEMA_SEMA_H
 
 #include "clang/AST/Attr.h"
+#include "clang/AST/Availability.h"
 #include "clang/AST/DeclarationName.h"
+#include "clang/AST/DeclTemplate.h"
 #include "clang/AST/Expr.h"
 #include "clang/AST/ExprObjC.h"
 #include "clang/AST/ExternalASTSource.h"
@@ -1216,8 +1218,10 @@ public:
   /// \brief Retrieve the current block, if any.
   sema::BlockScopeInfo *getCurBlock();
 
-  /// \brief Retrieve the current lambda scope info, if any.
-  sema::LambdaScopeInfo *getCurLambda();
+  /// Retrieve the current lambda scope info, if any.
+  /// \param IgnoreCapturedRegions true if should find the top-most lambda scope
+  /// info ignoring all inner captured regions scope infos.
+  sema::LambdaScopeInfo *getCurLambda(bool IgnoreCapturedRegions = false);
 
   /// \brief Retrieve the current generic lambda info, if any.
   sema::LambdaScopeInfo *getCurGenericLambda();
@@ -2039,7 +2043,7 @@ public:
   /// ActOnTagFinishDefinition - Invoked once we have finished parsing
   /// the definition of a tag (enumeration, class, struct, or union).
   void ActOnTagFinishDefinition(Scope *S, Decl *TagDecl,
-                                SourceLocation RBraceLoc);
+                                SourceRange BraceRange);
 
   void ActOnTagFinishSkippedDefinition(SkippedDefinitionContext Context);
 
@@ -2076,8 +2080,8 @@ public:
                           SourceLocation IdLoc, IdentifierInfo *Id,
                           AttributeList *Attrs,
                           SourceLocation EqualLoc, Expr *Val);
-  void ActOnEnumBody(SourceLocation EnumLoc, SourceLocation LBraceLoc,
-                     SourceLocation RBraceLoc, Decl *EnumDecl,
+  void ActOnEnumBody(SourceLocation EnumLoc, SourceRange BraceRange,
+                     Decl *EnumDecl,
                      ArrayRef<Decl *> Elements,
                      Scope *S, AttributeList *Attr);
 
@@ -3401,6 +3405,7 @@ public:
                          ConditionResult Cond, Stmt *ThenVal,
                          SourceLocation ElseLoc, Stmt *ElseVal);
   StmtResult BuildIfStmt(SourceLocation IfLoc, bool IsConstexpr,
+                         Stmt *InitStmt,
                          ConditionResult Cond, Stmt *ThenVal,
                          SourceLocation ElseLoc, Stmt *ElseVal);
   StmtResult ActOnStartOfSwitchStmt(SourceLocation SwitchLoc,
@@ -4738,6 +4743,10 @@ public:
   /// ActOnObjCBoolLiteral - Parse {__objc_yes,__objc_no} literals.
   ExprResult ActOnObjCBoolLiteral(SourceLocation OpLoc, tok::TokenKind Kind);
 
+  ExprResult
+  ActOnObjCAvailabilityCheckExpr(llvm::ArrayRef<AvailabilitySpec> AvailSpecs,
+                                 SourceLocation AtLoc, SourceLocation RParen);
+
   /// ActOnCXXNullPtrLiteral - Parse 'nullptr'.
   ExprResult ActOnCXXNullPtrLiteral(SourceLocation Loc);
 
@@ -5105,8 +5114,7 @@ public:
                                        SourceRange IntroducerRange,
                                        TypeSourceInfo *MethodType,
                                        SourceLocation EndLoc,
-                                       ArrayRef<ParmVarDecl *> Params, 
-                                       bool IsConstexprSpecified);
+                                       ArrayRef<ParmVarDecl *> Params);
 
   /// \brief Endow the lambda scope info with the relevant properties.
   void buildLambdaScope(sema::LambdaScopeInfo *LSI, 
@@ -6608,10 +6616,10 @@ public:
       TemplateInstantiation,
 
       /// We are instantiating a default argument for a template
-      /// parameter. The Entity is the template, and
-      /// TemplateArgs/NumTemplateArguments provides the template
-      /// arguments as specified.
-      /// FIXME: Use a TemplateArgumentList
+      /// parameter. The Entity is the template parameter whose argument is
+      /// being instantiated, the Template is the template, and the
+      /// TemplateArgs/NumTemplateArguments provide the template arguments as
+      /// specified.
       DefaultTemplateArgumentInstantiation,
 
       /// We are instantiating a default argument for a function.
@@ -6726,6 +6734,9 @@ public:
   SmallVector<ActiveTemplateInstantiation, 16>
     ActiveTemplateInstantiations;
 
+  /// Specializations whose definitions are currently being instantiated.
+  llvm::DenseSet<std::pair<Decl *, unsigned>> InstantiatingSpecializations;
+
   /// \brief Extra modules inspected when performing a lookup during a template
   /// instantiation. Computed lazily.
   SmallVector<Module*, 16> ActiveTemplateInstantiationLookupModules;
@@ -6832,12 +6843,12 @@ public:
     /// \brief Note that we are instantiating a default argument in a
     /// template-id.
     InstantiatingTemplate(Sema &SemaRef, SourceLocation PointOfInstantiation,
-                          TemplateDecl *Template,
+                          TemplateParameter Param, TemplateDecl *Template,
                           ArrayRef<TemplateArgument> TemplateArgs,
                           SourceRange InstantiationRange = SourceRange());
 
-    /// \brief Note that we are instantiating a default argument in a
-    /// template-id.
+    /// \brief Note that we are substituting either explicitly-specified or
+    /// deduced template arguments during function template argument deduction.
     InstantiatingTemplate(Sema &SemaRef, SourceLocation PointOfInstantiation,
                           FunctionTemplateDecl *FunctionTemplate,
                           ArrayRef<TemplateArgument> TemplateArgs,
@@ -6904,9 +6915,14 @@ public:
     /// recursive template instantiations.
     bool isInvalid() const { return Invalid; }
 
+    /// \brief Determine whether we are already instantiating this
+    /// specialization in some surrounding active instantiation.
+    bool isAlreadyInstantiating() const { return AlreadyInstantiating; }
+
   private:
     Sema &SemaRef;
     bool Invalid;
+    bool AlreadyInstantiating;
     bool SavedInNonInstantiationSFINAEContext;
     bool CheckInstantiationDepth(SourceLocation PointOfInstantiation,
                                  SourceRange InstantiationRange);
@@ -8222,6 +8238,12 @@ public:
       ArrayRef<OMPClause *> Clauses, Stmt *AStmt, SourceLocation StartLoc,
       SourceLocation EndLoc,
       llvm::DenseMap<ValueDecl *, Expr *> &VarsWithImplicitDSA);
+  /// \brief Called on well-formed '\#pragma omp target parallel for simd' after
+  /// parsing of the associated statement.
+  StmtResult ActOnOpenMPTargetParallelForSimdDirective(
+      ArrayRef<OMPClause *> Clauses, Stmt *AStmt, SourceLocation StartLoc,
+      SourceLocation EndLoc,
+      llvm::DenseMap<ValueDecl *, Expr *> &VarsWithImplicitDSA);
 
   /// Checks correctness of linear modifiers.
   bool CheckOpenMPLinearModifier(OpenMPLinearClauseKind LinKind,
@@ -8473,6 +8495,16 @@ public:
                                    SourceLocation StartLoc,
                                    SourceLocation LParenLoc,
                                    SourceLocation EndLoc);
+  /// Called on well-formed 'use_device_ptr' clause.
+  OMPClause *ActOnOpenMPUseDevicePtrClause(ArrayRef<Expr *> VarList,
+                                           SourceLocation StartLoc,
+                                           SourceLocation LParenLoc,
+                                           SourceLocation EndLoc);
+  /// Called on well-formed 'is_device_ptr' clause.
+  OMPClause *ActOnOpenMPIsDevicePtrClause(ArrayRef<Expr *> VarList,
+                                          SourceLocation StartLoc,
+                                          SourceLocation LParenLoc,
+                                          SourceLocation EndLoc);
 
   /// \brief The kind of conversion being performed.
   enum CheckedConversionKind {
@@ -9385,6 +9417,8 @@ private:
                               llvm::APSInt &Result);
   bool SemaBuiltinConstantArgRange(CallExpr *TheCall, int ArgNum,
                                    int Low, int High);
+  bool SemaBuiltinConstantArgMultiple(CallExpr *TheCall, int ArgNum,
+                                      unsigned Multiple);
   bool SemaBuiltinARMSpecialReg(unsigned BuiltinID, CallExpr *TheCall,
                                 int ArgNum, unsigned ExpectedFieldNum,
                                 bool AllowName);

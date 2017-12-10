@@ -172,6 +172,10 @@ public:
       if (!Visited.insert(File).second)
         continue;
 
+      // Do not map FileID's associated with system headers.
+      if (SM.isInSystemHeader(SM.getSpellingLoc(Loc)))
+        continue;
+
       unsigned Depth = 0;
       for (SourceLocation Parent = getIncludeOrExpansionLoc(Loc);
            Parent.isValid(); Parent = getIncludeOrExpansionLoc(Parent))
@@ -250,6 +254,10 @@ public:
 
       SourceLocation LocStart = Region.getStartLoc();
       assert(SM.getFileID(LocStart).isValid() && "region in invalid file");
+
+      // Ignore regions from system headers.
+      if (SM.isInSystemHeader(SM.getSpellingLoc(LocStart)))
+        continue;
 
       auto CovFileID = getCoverageFileID(LocStart);
       // Ignore regions that don't have a file, such as builtin macros.
@@ -342,6 +350,9 @@ struct EmptyCoverageMappingBuilder : public CoverageMappingBuilder {
     SmallVector<unsigned, 16> FileIDMapping;
     gatherFileIDs(FileIDMapping);
     emitSourceRegions();
+
+    if (MappingRegions.empty())
+      return;
 
     CoverageMappingWriter Writer(FileIDMapping, None, MappingRegions);
     Writer.write(OS);
@@ -596,6 +607,9 @@ struct CounterCoverageMappingBuilder
     emitExpansionRegions();
     gatherSkippedRegions();
 
+    if (MappingRegions.empty())
+      return;
+
     CoverageMappingWriter Writer(VirtualFileMapping, Builder.getExpressions(),
                                  MappingRegions);
     Writer.write(OS);
@@ -612,6 +626,11 @@ struct CounterCoverageMappingBuilder
 
   void VisitDecl(const Decl *D) {
     Stmt *Body = D->getBody();
+
+    // Do not propagate region counts into system headers.
+    if (Body && SM.isInSystemHeader(SM.getSpellingLoc(getStart(Body))))
+      return;
+
     propagateCounts(getRegionCounter(Body), Body);
   }
 

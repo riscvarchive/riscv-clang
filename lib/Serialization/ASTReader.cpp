@@ -2010,17 +2010,8 @@ InputFile ASTReader::getInputFile(ModuleFile &F, unsigned ID, bool Complain) {
   // For an overridden file, there is nothing to validate.
   if (!Overridden && //
       (StoredSize != File->getSize() ||
-#if defined(LLVM_ON_WIN32)
-       false
-#else
-       // In our regression testing, the Windows file system seems to
-       // have inconsistent modification times that sometimes
-       // erroneously trigger this error-handling path.
-       //
-       // FIXME: This probably also breaks HeaderFileInfo lookups on Windows.
        (StoredTime && StoredTime != File->getModificationTime() &&
         !DisableValidation)
-#endif
        )) {
     if (Complain) {
       // Build a list of the PCH imports that got us here (in reverse).
@@ -2317,6 +2308,11 @@ ASTReader::ReadControlBlock(ModuleFile &F,
       if (hasErrors && !DisableValidation && !AllowASTWithCompilerErrors) {
         Diag(diag::err_pch_with_compiler_errors);
         return HadErrors;
+      }
+      if (hasErrors) {
+        Diags.ErrorOccurred = true;
+        Diags.UncompilableErrorOccurred = true;
+        Diags.UnrecoverableErrorOccurred = true;
       }
 
       F.RelocatablePCH = Record[4];
@@ -8641,6 +8637,7 @@ void ASTReader::FinishedDeserializing() {
       auto Updates = std::move(PendingExceptionSpecUpdates);
       PendingExceptionSpecUpdates.clear();
       for (auto Update : Updates) {
+        ProcessingUpdatesRAIIObj ProcessingUpdates(*this);
         auto *FPT = Update.second->getType()->castAs<FunctionProtoType>();
         auto ESI = FPT->getExtProtoInfo().ExceptionSpec;
         if (auto *Listener = Context.getASTMutationListener())
@@ -8711,6 +8708,7 @@ ASTReader::ASTReader(
       AllowConfigurationMismatch(AllowConfigurationMismatch),
       ValidateSystemInputs(ValidateSystemInputs),
       UseGlobalIndex(UseGlobalIndex), TriedLoadingGlobalIndex(false),
+      ProcessingUpdateRecords(false),
       CurrSwitchCaseStmts(&SwitchCaseStmts), NumSLocEntriesRead(0),
       TotalNumSLocEntries(0), NumStatementsRead(0), TotalNumStatements(0),
       NumMacrosRead(0), TotalNumMacros(0), NumIdentifierLookups(0),

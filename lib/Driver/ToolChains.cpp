@@ -392,24 +392,12 @@ void Darwin::addProfileRTLibs(const ArgList &Args,
 void DarwinClang::AddLinkSanitizerLibArgs(const ArgList &Args,
                                           ArgStringList &CmdArgs,
                                           StringRef Sanitizer) const {
-  if (!Args.hasArg(options::OPT_dynamiclib) &&
-      !Args.hasArg(options::OPT_bundle)) {
-    // Sanitizer runtime libraries requires C++.
-    AddCXXStdlibLibArgs(Args, CmdArgs);
-  }
-
   AddLinkRuntimeLib(
       Args, CmdArgs,
       (Twine("libclang_rt.") + Sanitizer + "_" +
        getOSLibraryNameSuffix() + "_dynamic.dylib").str(),
       /*AlwaysLink*/ true, /*IsEmbedded*/ false,
       /*AddRPath*/ true);
-
-  if (GetCXXStdlibType(Args) == ToolChain::CST_Libcxx) {
-    // Add explicit dependcy on -lc++abi, as -lc++ doesn't re-export
-    // all RTTI-related symbols that UBSan uses.
-    CmdArgs.push_back("-lc++abi");
-  }
 }
 
 void DarwinClang::AddLinkRuntimeLibArgs(const ArgList &Args,
@@ -486,21 +474,26 @@ void DarwinClang::AddLinkRuntimeLibArgs(const ArgList &Args,
     else if (isMacosxVersionLT(10, 6))
       CmdArgs.push_back("-lgcc_s.10.5");
 
-    // For OS X, we thought we would only need a static runtime library when
-    // targeting 10.4, to provide versions of the static functions which were
-    // omitted from 10.4.dylib.
+    // Originally for OS X, we thought we would only need a static runtime
+    // library when targeting 10.4, to provide versions of the static functions
+    // which were omitted from 10.4.dylib. This led to the creation of the 10.4
+    // builtins library.
     //
     // Unfortunately, that turned out to not be true, because Darwin system
     // headers can still use eprintf on i386, and it is not exported from
     // libSystem. Therefore, we still must provide a runtime library just for
     // the tiny tiny handful of projects that *might* use that symbol.
-    if (isMacosxVersionLT(10, 5)) {
+    //
+    // Then over time, we figured out it was useful to add more things to the
+    // runtime so we created libclang_rt.osx.a to provide new functions when
+    // deploying to old OS builds, and for a long time we had both eprintf and
+    // osx builtin libraries. Which just seems excessive. So with PR 28855, we
+    // are removing the eprintf library and expecting eprintf to be provided by
+    // the OS X builtins library.
+    if (isMacosxVersionLT(10, 5))
       AddLinkRuntimeLib(Args, CmdArgs, "libclang_rt.10.4.a");
-    } else {
-      if (getTriple().getArch() == llvm::Triple::x86)
-        AddLinkRuntimeLib(Args, CmdArgs, "libclang_rt.eprintf.a");
+    else
       AddLinkRuntimeLib(Args, CmdArgs, "libclang_rt.osx.a");
-    }
   }
 }
 
@@ -695,13 +688,13 @@ void Darwin::AddDeploymentTarget(DerivedArgList &Args) const {
     assert(iOSVersion && "Unknown target platform!");
     if (!Driver::GetReleaseVersion(iOSVersion->getValue(), Major, Minor, Micro,
                                    HadExtra) ||
-        HadExtra || Major >= 10 || Minor >= 100 || Micro >= 100)
+        HadExtra || Major >= 100 || Minor >= 100 || Micro >= 100)
       getDriver().Diag(diag::err_drv_invalid_version_number)
           << iOSVersion->getAsString(Args);
   } else if (Platform == TvOS) {
     if (!Driver::GetReleaseVersion(TvOSVersion->getValue(), Major, Minor,
                                    Micro, HadExtra) || HadExtra ||
-        Major >= 10 || Minor >= 100 || Micro >= 100)
+        Major >= 100 || Minor >= 100 || Micro >= 100)
       getDriver().Diag(diag::err_drv_invalid_version_number)
           << TvOSVersion->getAsString(Args);
   } else if (Platform == WatchOS) {
@@ -3315,6 +3308,19 @@ void CloudABI::AddCXXStdlibLibArgs(const ArgList &Args,
 
 Tool *CloudABI::buildLinker() const {
   return new tools::cloudabi::Linker(*this);
+}
+
+bool CloudABI::isPIEDefault() const {
+  // Only enable PIE on architectures that support PC-relative
+  // addressing. PC-relative addressing is required, as the process
+  // startup code must be able to relocate itself.
+  switch (getTriple().getArch()) {
+  case llvm::Triple::aarch64:
+  case llvm::Triple::x86_64:
+    return true;
+  default:
+    return false;
+  }
 }
 
 SanitizerMask CloudABI::getSupportedSanitizers() const {

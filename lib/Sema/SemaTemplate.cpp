@@ -3256,7 +3256,7 @@ SubstDefaultTemplateArgument(Sema &SemaRef,
   // on the previously-computed template arguments.
   if (ArgType->getType()->isDependentType()) {
     Sema::InstantiatingTemplate Inst(SemaRef, TemplateLoc,
-                                     Template, Converted,
+                                     Param, Template, Converted,
                                      SourceRange(TemplateLoc, RAngleLoc));
     if (Inst.isInvalid())
       return nullptr;
@@ -3308,7 +3308,7 @@ SubstDefaultTemplateArgument(Sema &SemaRef,
                              NonTypeTemplateParmDecl *Param,
                         SmallVectorImpl<TemplateArgument> &Converted) {
   Sema::InstantiatingTemplate Inst(SemaRef, TemplateLoc,
-                                   Template, Converted,
+                                   Param, Template, Converted,
                                    SourceRange(TemplateLoc, RAngleLoc));
   if (Inst.isInvalid())
     return ExprError();
@@ -3359,8 +3359,9 @@ SubstDefaultTemplateArgument(Sema &SemaRef,
                              TemplateTemplateParmDecl *Param,
                        SmallVectorImpl<TemplateArgument> &Converted,
                              NestedNameSpecifierLoc &QualifierLoc) {
-  Sema::InstantiatingTemplate Inst(SemaRef, TemplateLoc, Template, Converted,
-                                   SourceRange(TemplateLoc, RAngleLoc));
+  Sema::InstantiatingTemplate Inst(
+      SemaRef, TemplateLoc, TemplateParameter(Param), Template, Converted,
+      SourceRange(TemplateLoc, RAngleLoc));
   if (Inst.isInvalid())
     return TemplateName();
 
@@ -3981,7 +3982,9 @@ bool Sema::CheckTemplateArgumentList(TemplateDecl *Template,
     }
 
     // Introduce an instantiation record that describes where we are using
-    // the default template argument.
+    // the default template argument. We're not actually instantiating a
+    // template here, we just create this object to put a note into the
+    // context stack.
     InstantiatingTemplate Inst(*this, RAngleLoc, Template, *Param, Converted,
                                SourceRange(TemplateLoc, RAngleLoc));
     if (Inst.isInvalid())
@@ -5377,7 +5380,8 @@ bool Sema::CheckTemplateArgument(TemplateTemplateParmDecl *Param,
   // partial specializations.
   if (!isa<ClassTemplateDecl>(Template) &&
       !isa<TemplateTemplateParmDecl>(Template) &&
-      !isa<TypeAliasTemplateDecl>(Template)) {
+      !isa<TypeAliasTemplateDecl>(Template) &&
+      !isa<BuiltinTemplateDecl>(Template)) {
     assert(isa<FunctionTemplateDecl>(Template) &&
            "Only function templates are possible here");
     Diag(Arg.getLocation(), diag::err_template_arg_not_valid_template);
@@ -7508,7 +7512,7 @@ Sema::ActOnExplicitInstantiation(Scope *S,
   // Set source locations for keywords.
   Specialization->setExternLoc(ExternLoc);
   Specialization->setTemplateKeywordLoc(TemplateLoc);
-  Specialization->setRBraceLoc(SourceLocation());
+  Specialization->setBraceRange(SourceRange());
 
   if (Attr)
     ProcessDeclAttributeList(S, Specialization, Attr);

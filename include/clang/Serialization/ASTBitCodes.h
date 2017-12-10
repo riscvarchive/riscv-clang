@@ -1349,8 +1349,10 @@ namespace clang {
       STMT_OBJC_AT_THROW,
       /// \brief An ObjCAutoreleasePoolStmt record.
       STMT_OBJC_AUTORELEASE_POOL,
-      /// \brief A ObjCBoolLiteralExpr record.
+      /// \brief An ObjCBoolLiteralExpr record.
       EXPR_OBJC_BOOL_LITERAL,
+      /// \brief An ObjCAvailabilityCheckExpr record.
+      EXPR_OBJC_AVAILABILITY_CHECK,
 
       // C++
       
@@ -1478,6 +1480,7 @@ namespace clang {
       STMT_OMP_DISTRIBUTE_PARALLEL_FOR_DIRECTIVE,
       STMT_OMP_DISTRIBUTE_PARALLEL_FOR_SIMD_DIRECTIVE,
       STMT_OMP_DISTRIBUTE_SIMD_DIRECTIVE,
+      STMT_OMP_TARGET_PARALLEL_FOR_SIMD_DIRECTIVE,
       EXPR_OMP_ARRAY_SECTION,
 
       // ARC

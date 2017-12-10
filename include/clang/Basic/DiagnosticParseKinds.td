@@ -780,19 +780,10 @@ def warn_cxx98_compat_lambda : Warning<
   InGroup<CXX98Compat>, DefaultIgnore;
 def err_lambda_missing_parens : Error<
   "lambda requires '()' before %select{'mutable'|return type|"
-  "attribute specifier|'constexpr'}0">;
-def err_lambda_decl_specifier_repeated : Error<
-  "%select{'mutable'|'constexpr'}0 cannot appear multiple times in a lambda declarator">;
+  "attribute specifier}0">;
 // C++1z lambda expressions
 def err_expected_star_this_capture : Error<
   "expected 'this' following '*' in lambda capture list">;
-
-// C++1z constexpr lambda expressions
-def warn_cxx14_compat_constexpr_on_lambda : Warning<
-  "constexpr on lambda expressions is incompatible with C++ standards before C++1z">,
-  InGroup<CXXPre1zCompat>, DefaultIgnore;
-def ext_constexpr_on_lambda_cxx1z : ExtWarn<
-  "'constexpr' on lambda expressions is a C++1z extension">, InGroup<CXX1z>;
 
 // Availability attribute
 def err_expected_version : Error<
@@ -822,6 +813,21 @@ def err_availability_redundant : Error<
 def warn_availability_and_unavailable : Warning<
   "'unavailable' availability overrides all other availability information">,
   InGroup<Availability>;
+
+// @available(...)
+def err_avail_query_expected_condition : Error<
+  "expected an availability condition here">;
+def err_avail_query_expected_platform_name : Error<
+  "expected a platform name here">;
+
+def err_avail_query_unrecognized_platform_name : Error<
+  "unrecognized platform name %0">;
+def err_availability_query_wildcard_required: Error<
+  "must handle potential future platforms with '*'">;
+def err_availability_query_repeated_platform: Error<
+  "version for '%0' already specified">;
+def err_availability_query_repeated_star : Error<
+  "'*' query has already been specified">;
 
 // Type safety attributes
 def err_type_safety_unknown_flag : Error<

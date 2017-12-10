@@ -26,6 +26,7 @@
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/Intrinsics.h"
+#include "llvm/IR/MDBuilder.h"
 #include <sstream>
 
 using namespace clang;
@@ -329,6 +330,17 @@ static llvm::Value *EmitOverflowIntrinsic(CodeGenFunction &CGF,
   llvm::Value *Tmp = CGF.Builder.CreateCall(Callee, {X, Y});
   Carry = CGF.Builder.CreateExtractValue(Tmp, 1);
   return CGF.Builder.CreateExtractValue(Tmp, 0);
+}
+
+static Value *emitRangedBuiltin(CodeGenFunction &CGF,
+                                unsigned IntrinsicID,
+                                int low, int high) {
+    llvm::MDBuilder MDHelper(CGF.getLLVMContext());
+    llvm::MDNode *RNode = MDHelper.createRange(APInt(32, low), APInt(32, high));
+    Value *F = CGF.CGM.getIntrinsic(IntrinsicID, {});
+    llvm::Instruction *Call = CGF.Builder.CreateCall(F);
+    Call->setMetadata(llvm::LLVMContext::MD_range, RNode);
+    return Call;
 }
 
 namespace {
@@ -2197,8 +2209,9 @@ RValue CodeGenFunction::EmitBuiltinExpr(const FunctionDecl *FD,
       NewArg = Builder.CreateAddrSpaceCast(Arg0, NewArgT);
     else
       NewArg = Builder.CreateBitOrPointerCast(Arg0, NewArgT);
-    auto NewCall = Builder.CreateCall(CGM.CreateRuntimeFunction(FTy,
-      E->getDirectCallee()->getName()), {NewArg});
+    auto NewName = std::string("__") + E->getDirectCallee()->getName().str();
+    auto NewCall =
+        Builder.CreateCall(CGM.CreateRuntimeFunction(FTy, NewName), {NewArg});
     return RValue::get(Builder.CreateBitOrPointerCast(NewCall,
       ConvertType(E->getType())));
   }
@@ -7647,6 +7660,8 @@ Value *CodeGenFunction::EmitAMDGPUBuiltinExpr(unsigned BuiltinID,
   case AMDGPU::BI__builtin_amdgcn_fract:
   case AMDGPU::BI__builtin_amdgcn_fractf:
     return emitUnaryBuiltin(*this, E, Intrinsic::amdgcn_fract);
+  case AMDGPU::BI__builtin_amdgcn_lerp:
+    return emitTernaryBuiltin(*this, E, Intrinsic::amdgcn_lerp);
   case AMDGPU::BI__builtin_amdgcn_class:
   case AMDGPU::BI__builtin_amdgcn_classf:
     return emitFPIntBuiltin(*this, E, Intrinsic::amdgcn_class);
@@ -7657,19 +7672,25 @@ Value *CodeGenFunction::EmitAMDGPUBuiltinExpr(unsigned BuiltinID,
     CI->setConvergent();
     return CI;
   }
-  // Legacy amdgpu prefix
-  case AMDGPU::BI__builtin_amdgpu_rsq:
-  case AMDGPU::BI__builtin_amdgpu_rsqf: {
-    if (getTarget().getTriple().getArch() == Triple::amdgcn)
-      return emitUnaryBuiltin(*this, E, Intrinsic::amdgcn_rsq);
-    return emitUnaryBuiltin(*this, E, Intrinsic::r600_rsq);
-  }
-  case AMDGPU::BI__builtin_amdgpu_ldexp:
-  case AMDGPU::BI__builtin_amdgpu_ldexpf: {
-    if (getTarget().getTriple().getArch() == Triple::amdgcn)
-      return emitFPIntBuiltin(*this, E, Intrinsic::amdgcn_ldexp);
-    return emitFPIntBuiltin(*this, E, Intrinsic::AMDGPU_ldexp);
-  }
+
+  // amdgcn workitem
+  case AMDGPU::BI__builtin_amdgcn_workitem_id_x:
+    return emitRangedBuiltin(*this, Intrinsic::amdgcn_workitem_id_x, 0, 1024);
+  case AMDGPU::BI__builtin_amdgcn_workitem_id_y:
+    return emitRangedBuiltin(*this, Intrinsic::amdgcn_workitem_id_y, 0, 1024);
+  case AMDGPU::BI__builtin_amdgcn_workitem_id_z:
+    return emitRangedBuiltin(*this, Intrinsic::amdgcn_workitem_id_z, 0, 1024);
+
+  // r600 intrinsics
+  case AMDGPU::BI__builtin_r600_recipsqrt_ieee:
+  case AMDGPU::BI__builtin_r600_recipsqrt_ieeef:
+    return emitUnaryBuiltin(*this, E, Intrinsic::r600_recipsqrt_ieee);
+  case AMDGPU::BI__builtin_r600_read_tidig_x:
+    return emitRangedBuiltin(*this, Intrinsic::r600_read_tidig_x, 0, 1024);
+  case AMDGPU::BI__builtin_r600_read_tidig_y:
+    return emitRangedBuiltin(*this, Intrinsic::r600_read_tidig_y, 0, 1024);
+  case AMDGPU::BI__builtin_r600_read_tidig_z:
+    return emitRangedBuiltin(*this, Intrinsic::r600_read_tidig_z, 0, 1024);
   default:
     return nullptr;
   }

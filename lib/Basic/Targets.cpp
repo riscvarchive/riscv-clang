@@ -158,14 +158,25 @@ static void getDarwinDefines(MacroBuilder &Builder, const LangOptions &Opts,
 
   // Set the appropriate OS version define.
   if (Triple.isiOS()) {
-    assert(Maj < 10 && Min < 100 && Rev < 100 && "Invalid version!");
-    char Str[6];
-    Str[0] = '0' + Maj;
-    Str[1] = '0' + (Min / 10);
-    Str[2] = '0' + (Min % 10);
-    Str[3] = '0' + (Rev / 10);
-    Str[4] = '0' + (Rev % 10);
-    Str[5] = '\0';
+    assert(Maj < 100 && Min < 100 && Rev < 100 && "Invalid version!");
+    char Str[7];
+    if (Maj < 10) {
+      Str[0] = '0' + Maj;
+      Str[1] = '0' + (Min / 10);
+      Str[2] = '0' + (Min % 10);
+      Str[3] = '0' + (Rev / 10);
+      Str[4] = '0' + (Rev % 10);
+      Str[5] = '\0';
+    } else {
+      // Handle versions >= 10.
+      Str[0] = '0' + (Maj / 10);
+      Str[1] = '0' + (Maj % 10);
+      Str[2] = '0' + (Min / 10);
+      Str[3] = '0' + (Min % 10);
+      Str[4] = '0' + (Rev / 10);
+      Str[5] = '0' + (Rev % 10);
+      Str[6] = '\0';
+    }
     if (Triple.isTvOS())
       Builder.defineMacro("__ENVIRONMENT_TV_OS_VERSION_MIN_REQUIRED__", Str);
     else
@@ -2070,21 +2081,23 @@ public:
 
   static GPUKind parseAMDGCNName(StringRef Name) {
     return llvm::StringSwitch<GPUKind>(Name)
-      .Case("tahiti",   GK_SOUTHERN_ISLANDS)
-      .Case("pitcairn", GK_SOUTHERN_ISLANDS)
-      .Case("verde",    GK_SOUTHERN_ISLANDS)
-      .Case("oland",    GK_SOUTHERN_ISLANDS)
-      .Case("hainan",   GK_SOUTHERN_ISLANDS)
-      .Case("bonaire",  GK_SEA_ISLANDS)
-      .Case("kabini",   GK_SEA_ISLANDS)
-      .Case("kaveri",   GK_SEA_ISLANDS)
-      .Case("hawaii",   GK_SEA_ISLANDS)
-      .Case("mullins",  GK_SEA_ISLANDS)
-      .Case("tonga",    GK_VOLCANIC_ISLANDS)
-      .Case("iceland",  GK_VOLCANIC_ISLANDS)
-      .Case("carrizo",  GK_VOLCANIC_ISLANDS)
-      .Case("fiji",     GK_VOLCANIC_ISLANDS)
-      .Case("stoney",   GK_VOLCANIC_ISLANDS)
+      .Case("tahiti",    GK_SOUTHERN_ISLANDS)
+      .Case("pitcairn",  GK_SOUTHERN_ISLANDS)
+      .Case("verde",     GK_SOUTHERN_ISLANDS)
+      .Case("oland",     GK_SOUTHERN_ISLANDS)
+      .Case("hainan",    GK_SOUTHERN_ISLANDS)
+      .Case("bonaire",   GK_SEA_ISLANDS)
+      .Case("kabini",    GK_SEA_ISLANDS)
+      .Case("kaveri",    GK_SEA_ISLANDS)
+      .Case("hawaii",    GK_SEA_ISLANDS)
+      .Case("mullins",   GK_SEA_ISLANDS)
+      .Case("tonga",     GK_VOLCANIC_ISLANDS)
+      .Case("iceland",   GK_VOLCANIC_ISLANDS)
+      .Case("carrizo",   GK_VOLCANIC_ISLANDS)
+      .Case("fiji",      GK_VOLCANIC_ISLANDS)
+      .Case("stoney",    GK_VOLCANIC_ISLANDS)
+      .Case("polaris10", GK_VOLCANIC_ISLANDS)
+      .Case("polaris11", GK_VOLCANIC_ISLANDS)
       .Default(GK_NONE);
   }
 
@@ -6713,246 +6726,6 @@ public:
   }
 };
 
-//RISCV target info
-  class RISCVTargetInfo : public TargetInfo {
-    static const TargetInfo::GCCRegAlias GCCRegAliases[];
-    static const char * const GCCRegNames[];
-    std::string CPU;
-
-  public:
-    RISCVTargetInfo(const llvm::Triple &triple, const TargetOptions &) : TargetInfo(triple) {
-      TLSSupported = true;
-      IntWidth = IntAlign = 32;
-      LongLongWidth = LongLongAlign = 64;
-      FloatWidth = FloatAlign = 32;
-      DoubleWidth = DoubleAlign = 64;
-      DoubleFormat = &llvm::APFloat::IEEEdouble;
-      LongDoubleWidth = LongDoubleAlign = 64;
-      LongDoubleFormat = &llvm::APFloat::IEEEdouble;
-      MinGlobalAlign = 8;
-      MaxAtomicPromoteWidth = MaxAtomicInlineWidth = 32;
-    }
-    bool setCPU(const std::string &Name) override {
-      CPU = Name;
-      return true;
-    }
-    void getTargetDefines(const LangOptions &Opts,
-			  MacroBuilder &Builder) const override {
-      // Target identification
-      Builder.defineMacro("__riscv");
-      Builder.defineMacro("__riscv__");
-
-      // Target properties
-      Builder.defineMacro("_RISCV_SZPTR", Twine((int)PointerWidth));
-    }
-    ArrayRef<Builtin::Info> getTargetBuiltins() const override {
-      // TODO: Implement!
-      return None;
-    }
-    ArrayRef<const char *> getGCCRegNames() const override;
-    ArrayRef<TargetInfo::GCCRegAlias> getGCCRegAliases() const override;
-    bool
-    initFeatureMap(llvm::StringMap<bool> &Features, DiagnosticsEngine &Diags,
-                   StringRef CPU,
-                   const std::vector<std::string> &FeaturesVec) const override {
-      if (CPU.find("RV32") == 0){
-          setFeatureEnabled(Features, "rv32", true);
-      }else if(CPU.find("RV64") == 0){
-          setFeatureEnabled(Features, "rv64", true);
-      }
-      if(CPU.find("M") != std::string::npos)
-        setFeatureEnabled(Features, "m", true);
-      if(CPU.find("A") != std::string::npos)
-        setFeatureEnabled(Features, "a", true);
-      if(CPU.find("F") != std::string::npos)
-        setFeatureEnabled(Features, "f", true);
-      if(CPU.find("D") != std::string::npos)
-        setFeatureEnabled(Features, "d", true);
-      return TargetInfo::initFeatureMap(Features, Diags, CPU, FeaturesVec);
-    }
-    void setFeatureEnabled(llvm::StringMap<bool> &Features,
-			   StringRef Name,
-			   bool Enabled) const override {
-      if (Name == "m" || Name == "a" || Name == "f" ||
-	  Name == "d" || Name == "rv32" || Name == "rv64") { 
-	Features[Name] = Enabled;
-      }
-    }
-    bool handleTargetFeatures(std::vector<std::string> &Features,
-			      DiagnosticsEngine &Diags) override {
-      return true;
-    }
-    bool validateAsmConstraint(const char *&Name,
-			       TargetInfo::ConstraintInfo &info) const override;
-    const char *getClobbers() const override {
-      // FIXME: Implement!
-      return "";
-    }
-    BuiltinVaListKind getBuiltinVaListKind() const override {
-      return TargetInfo::VoidPtrBuiltinVaList;
-    }
-  };
-
-const TargetInfo::GCCRegAlias RISCVTargetInfo::GCCRegAliases[] = {
-	{ { "zero" },   "x0" },
-	{ { "ra"},      "x1" },
-	{ { "sp"},      "x2" },
-	{ { "gp"},      "x3" },
-	{ { "tp"},      "x4" },
-	{ { "t0"},      "x5" },
-	{ { "t1"},      "x6" },
-	{ { "t2"},      "x7" },
-	{ { "s0","fp"}, "x8" },
-	{ { "s1"},      "x9" },
-	{ { "a0"},      "x10" },
-	{ { "a1"},      "x11" },
-	{ { "a2"},      "x12" },
-	{ { "a3"},      "x13" },
-	{ { "a4"},      "x14" },
-	{ { "a5"},      "x15" },
-	{ { "a6"},      "x16" },
-	{ { "a7"},      "x17" },
-	{ { "s2"},      "x18" },
-	{ { "s3"},      "x19" },
-	{ { "s4"},      "x20" },
-	{ { "s5"},      "x21" },
-	{ { "s6"},      "x22" },
-	{ { "s7"},      "x23" },
-	{ { "s8"},      "x24" },
-	{ { "s9"},      "x25" },
-	{ { "s1"},      "x26" },
-	{ { "s11"},     "x27" },
-	{ { "t3"},      "x28" },
-	{ { "t4"},      "x29" },
-	{ { "t5"},      "x30" },
-	{ { "t6"},      "x31" },
-	//FP
-	{ { "ft0" }, "f0" },
-	{ { "ft1" }, "f1" },
-	{ { "ft2" }, "f2" },
-	{ { "ft3" }, "f3" },
-	{ { "ft4" }, "f4" },
-	{ { "ft5" }, "f5" },
-	{ { "ft6" }, "f6" },
-	{ { "ft7" }, "f7" },
-	{ { "fs0" }, "f8" },
-	{ { "fs1" }, "f9" },
-	{ { "fa0" }, "f10" },
-	{ { "fa1" }, "f11" },
-	{ { "fa2"}, "f12" },
-	{ { "fa3"}, "f13" },
-	{ { "fa4"}, "f14" },
-	{ { "fa5"}, "f15" },
-	{ { "fa6" }, "f16" },
-	{ { "fa7" }, "f17" },
-	{ { "fs2" }, "f18" },
-	{ { "fs3" }, "f19" },
-	{ { "fs4" }, "f20" },
-	{ { "fs5" }, "f21" },
-	{ { "fs6" }, "f22" },
-	{ { "fs7" }, "f23" },
-	{ { "fs8" }, "f24" },
-	{ { "fs9" }, "f25" },
-	{ { "fs10"}, "f26" },
-	{ { "fs11"}, "f27" },
-	{ { "fa8" }, "f28" },
-	{ { "fa9" }, "f29" },
-	{ { "fa10"}, "f30" },
-	{ { "fa11"}, "f31" }
-  };
-
-  const char *const RISCVTargetInfo::GCCRegNames[] = {
-    "x0"  ,  "x1" ,  "x2"  , "x3"  , "x4"  , "x5"  , "x6"  , "x7"  ,
-    "x8"  ,  "x9" ,  "x10" , "x11" , "x12" , "x13" , "x14" , "x15" ,
-    "x16" , "x17" ,  "x18" , "x19" , "x20" , "x21" , "x22" , "x23" ,
-    "x24" , "x25" ,  "x26" , "x27" , "x28" , "x29" , "x30" , "x31" ,
-    "f0"  , "f1"  ,  "f2"  , "f3"  , "f4"  , "f5"  , "f6"  , "f7"  ,
-    "f8"  , "f9"  ,  "f10" , "f11" , "f12" , "f13" , "f14" , "f15" ,
-    "f16" , "f17" ,  "f18" , "f19" , "f20" , "f21" , "f22" , "f23" ,
-    "f24" , "f25" ,  "f26" , "f27" , "f28" , "f29" , "f30" , "f31"
-  };
-
-  ArrayRef<const char *> RISCVTargetInfo::getGCCRegNames() const {
-    return llvm::makeArrayRef(GCCRegNames);
-  }
-  ArrayRef<TargetInfo::GCCRegAlias> RISCVTargetInfo::getGCCRegAliases() const {
-   return llvm::makeArrayRef(GCCRegAliases);
-  }
-
-  bool RISCVTargetInfo::
-  validateAsmConstraint(const char *&Name,
-                        TargetInfo::ConstraintInfo &Info) const {
-    switch (*Name) {
-    default:
-      return false;
-
-    //Full Listing from riscv-gcc/gcc/config/riscv/constraints.md
-    //A -vector integer reg
-    //B -vector float reg
-    //d -equivalent to r
-    //f -float reg
-    //h -not supported
-    //b -internal (all regs)
-    //j -internal (v1_reg)
-    //z -float condition code reg (gr_regs)
-    //Z -internal (constant 1?)
-    //I -I-type signed 12bit immediate
-    //J -integer zero (constant 0)
-    //G -float zero 
-    //Q -internal (const_arith_operand)
-    //YR-an address that is held in a gpr
-    //R -an address that can be used in a non-macro load store
-    //S -internal - a constant call adress
-    //T -internal - a constant mover_operand
-    //W -internal - a mem address based on a base reg
-    //YG-internal - a vector zero
-    //
-    //For generic constraints see gccs simple constraints doc
-
-    case 'r': // CPU register
-    case 'd': // Data register (equivalent to 'r')
-    case 'f': // Floating-point register
-      Info.setAllowsRegister();
-      return true;
-
-    case 'I': // signed 12-bit constant
-    case 'J': // constant zero
-      return true;
-
-    case 'R': // an address that can be used in a non-mcaro load or store
-      Info.setAllowsMemory();
-      return true;
-    }
-  }
-  class RISCV32TargetInfo : public RISCVTargetInfo {
-  public:
-    RISCV32TargetInfo(const llvm::Triple &Triple, const TargetOptions &Opts) : RISCVTargetInfo(Triple, Opts) {
-      resetDataLayout("e-m:e-p:32:32:32-i1:8:16-i8:8:16-i16:16-i32:32-f32:32-f64:64-f80:128-f128:128-n32");
-	    PointerWidth = PointerAlign = 32;
-	    LongWidth = LongAlign = 32;
-    }
-    void getTargetDefines(const LangOptions &Opts,
-                          MacroBuilder &Builder) const override {
-      RISCVTargetInfo::getTargetDefines(Opts, Builder);
-    }
-  };
-
-  class RISCV64TargetInfo : public RISCVTargetInfo {
-  public:
-    RISCV64TargetInfo(const llvm::Triple &Triple, const TargetOptions &Opts) : RISCVTargetInfo(Triple, Opts) {
-      resetDataLayout("e-m:e-i1:8:16-i8:8:16-i64:64-f80:128-n32:64");
-	    PointerWidth = PointerAlign = 64;
-	    LongWidth = LongAlign = 64;
-    }
-    void getTargetDefines(const LangOptions &Opts,
-                          MacroBuilder &Builder) const override {
-      RISCVTargetInfo::getTargetDefines(Opts, Builder);
-      Builder.defineMacro("__riscv64");
-    }
-  };
-//end RISCV target info
-
-
 class SystemZTargetInfo : public TargetInfo {
   static const Builtin::Info BuiltinInfo[];
   static const char *const GCCRegNames[];
@@ -7334,9 +7107,9 @@ class MipsTargetInfo : public TargetInfo {
     if (ABI == "o32")
       Layout = "m:m-p:32:32-i8:8:32-i16:16:32-i64:64-n32-S64";
     else if (ABI == "n32")
-      Layout = "m:m-p:32:32-i8:8:32-i16:16:32-i64:64-n32:64-S128";
+      Layout = "m:e-p:32:32-i8:8:32-i16:16:32-i64:64-n32:64-S128";
     else if (ABI == "n64")
-      Layout = "m:m-i8:8:32-i16:16:32-i64:64-n32:64-S128";
+      Layout = "m:e-i8:8:32-i16:16:32-i64:64-n32:64-S128";
     else
       llvm_unreachable("Invalid ABI");
 
@@ -8410,6 +8183,8 @@ static TargetInfo *AllocateTarget(const llvm::Triple &Triple,
       return new DarwinARMTargetInfo(Triple, Opts);
 
     switch (os) {
+    case llvm::Triple::CloudABI:
+      return new CloudABITargetInfo<ARMleTargetInfo>(Triple, Opts);
     case llvm::Triple::Linux:
       return new LinuxTargetInfo<ARMleTargetInfo>(Triple, Opts);
     case llvm::Triple::FreeBSD:
@@ -8642,21 +8417,6 @@ static TargetInfo *AllocateTarget(const llvm::Triple &Triple,
       return new FreeBSDTargetInfo<SparcV9TargetInfo>(Triple, Opts);
     default:
       return new SparcV9TargetInfo(Triple, Opts);
-    }
-
-  case llvm::Triple::riscv:
-    switch (os) {
-    case llvm::Triple::Linux:
-      return new LinuxTargetInfo<RISCV32TargetInfo>(Triple, Opts);
-    default:
-      return new RISCV32TargetInfo(Triple, Opts);
-    }
-  case llvm::Triple::riscv64:
-    switch (os) {
-    case llvm::Triple::Linux:
-      return new LinuxTargetInfo<RISCV64TargetInfo>(Triple, Opts);
-    default:
-      return new RISCV64TargetInfo(Triple, Opts);
     }
 
   case llvm::Triple::systemz:

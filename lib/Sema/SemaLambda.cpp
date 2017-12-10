@@ -66,17 +66,20 @@ getStackIndexOfNearestEnclosingCaptureReadyLambda(
   // Label failure to capture.
   const Optional<unsigned> NoLambdaIsCaptureReady;
 
+  // Ignore all inner captured regions.
+  unsigned CurScopeIndex = FunctionScopes.size() - 1;
+  while (CurScopeIndex > 0 && isa<clang::sema::CapturedRegionScopeInfo>(
+                                  FunctionScopes[CurScopeIndex]))
+    --CurScopeIndex;
   assert(
-      isa<clang::sema::LambdaScopeInfo>(
-          FunctionScopes[FunctionScopes.size() - 1]) &&
+      isa<clang::sema::LambdaScopeInfo>(FunctionScopes[CurScopeIndex]) &&
       "The function on the top of sema's function-info stack must be a lambda");
-  
+
   // If VarToCapture is null, we are attempting to capture 'this'.
   const bool IsCapturingThis = !VarToCapture;
   const bool IsCapturingVariable = !IsCapturingThis;
 
   // Start with the current lambda at the top of the stack (highest index).
-  unsigned CurScopeIndex = FunctionScopes.size() - 1;
   DeclContext *EnclosingDC =
       cast<sema::LambdaScopeInfo>(FunctionScopes[CurScopeIndex])->CallOperator;
 
@@ -311,18 +314,21 @@ Sema::getCurrentMangleNumberContext(const DeclContext *DC,
   bool IsInNonspecializedTemplate =
     !ActiveTemplateInstantiations.empty() || CurContext->isDependentContext();
   switch (Kind) {
-  case Normal:
+  case Normal: {
     //  -- the bodies of non-exported nonspecialized template functions
     //  -- the bodies of inline functions
     if ((IsInNonspecializedTemplate &&
          !(ManglingContextDecl && isa<ParmVarDecl>(ManglingContextDecl))) ||
         isInInlineFunction(CurContext)) {
       ManglingContextDecl = nullptr;
+      while (auto *CD = dyn_cast<CapturedDecl>(DC))
+        DC = CD->getParent();
       return &Context.getManglingNumberContext(DC);
     }
 
     ManglingContextDecl = nullptr;
     return nullptr;
+  }
 
   case StaticDataMember:
     //  -- the initializers of nonspecialized static members of template classes
@@ -355,8 +361,7 @@ CXXMethodDecl *Sema::startLambdaDefinition(CXXRecordDecl *Class,
                                            SourceRange IntroducerRange,
                                            TypeSourceInfo *MethodTypeInfo,
                                            SourceLocation EndLoc,
-                                           ArrayRef<ParmVarDecl *> Params,
-                                           const bool IsConstexprSpecified) {
+                                           ArrayRef<ParmVarDecl *> Params) {
   QualType MethodType = MethodTypeInfo->getType();
   TemplateParameterList *TemplateParams = 
             getGenericLambdaTemplateParameterList(getCurLambda(), *this);
@@ -393,7 +398,7 @@ CXXMethodDecl *Sema::startLambdaDefinition(CXXRecordDecl *Class,
                             MethodType, MethodTypeInfo,
                             SC_None,
                             /*isInline=*/true,
-                            IsConstexprSpecified,
+                            /*isConstExpr=*/false,
                             EndLoc);
   Method->setAccess(AS_public);
   
@@ -878,9 +883,8 @@ void Sema::ActOnStartOfLambdaDefinition(LambdaIntroducer &Intro,
   CXXRecordDecl *Class = createLambdaClosureType(Intro.Range, MethodTyInfo,
                                                  KnownDependent, Intro.Default);
 
-  CXXMethodDecl *Method =
-      startLambdaDefinition(Class, Intro.Range, MethodTyInfo, EndLoc, Params,
-                            ParamInfo.getDeclSpec().isConstexprSpecified());
+  CXXMethodDecl *Method = startLambdaDefinition(Class, Intro.Range,
+                                                MethodTyInfo, EndLoc, Params);
   if (ExplicitParams)
     CheckCXXDefaultArguments(Method);
   
@@ -1599,17 +1603,6 @@ ExprResult Sema::BuildLambdaExpr(SourceLocation StartLoc, SourceLocation EndLoc,
                                           CaptureInits, ArrayIndexVars, 
                                           ArrayIndexStarts, EndLoc,
                                           ContainsUnexpandedParameterPack);
-  // If the lambda expression's call operator is not explicitly marked constexpr
-  // and we are not in a dependent context, analyze the call operator to infer
-  // its constexpr-ness, supressing diagnostics while doing so.
-  if (getLangOpts().CPlusPlus1z && !CallOperator->isInvalidDecl() &&
-      !CallOperator->isConstexpr() &&
-      !Class->getDeclContext()->isDependentContext()) {
-    TentativeAnalysisScope DiagnosticScopeGuard(*this);
-    CallOperator->setConstexpr(
-        CheckConstexprFunctionDecl(CallOperator) &&
-        CheckConstexprFunctionBody(CallOperator, CallOperator->getBody()));
-  }
 
   if (!CurContext->isDependentContext()) {
     switch (ExprEvalContexts.back().Context) {

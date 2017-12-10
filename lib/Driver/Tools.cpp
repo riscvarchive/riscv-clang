@@ -296,12 +296,45 @@ static bool forwardToGCC(const Option &O) {
          !O.hasFlag(options::DriverOption) && !O.hasFlag(options::LinkerInput);
 }
 
+/// Add the C++ include args of other offloading toolchains. If this is a host
+/// job, the device toolchains are added. If this is a device job, the host
+/// toolchains will be added.
+static void addExtraOffloadCXXStdlibIncludeArgs(Compilation &C,
+                                                const JobAction &JA,
+                                                const ArgList &Args,
+                                                ArgStringList &CmdArgs) {
+
+  if (JA.isHostOffloading(Action::OFK_Cuda))
+    C.getSingleOffloadToolChain<Action::OFK_Cuda>()
+        ->AddClangCXXStdlibIncludeArgs(Args, CmdArgs);
+  else if (JA.isDeviceOffloading(Action::OFK_Cuda))
+    C.getSingleOffloadToolChain<Action::OFK_Host>()
+        ->AddClangCXXStdlibIncludeArgs(Args, CmdArgs);
+
+  // TODO: Add support for other programming models here.
+}
+
+/// Add the include args that are specific of each offloading programming model.
+static void addExtraOffloadSpecificIncludeArgs(Compilation &C,
+                                               const JobAction &JA,
+                                               const ArgList &Args,
+                                               ArgStringList &CmdArgs) {
+
+  if (JA.isHostOffloading(Action::OFK_Cuda))
+    C.getSingleOffloadToolChain<Action::OFK_Host>()->AddCudaIncludeArgs(
+        Args, CmdArgs);
+  else if (JA.isDeviceOffloading(Action::OFK_Cuda))
+    C.getSingleOffloadToolChain<Action::OFK_Cuda>()->AddCudaIncludeArgs(
+        Args, CmdArgs);
+
+  // TODO: Add support for other programming models here.
+}
+
 void Clang::AddPreprocessingOptions(Compilation &C, const JobAction &JA,
                                     const Driver &D, const ArgList &Args,
                                     ArgStringList &CmdArgs,
                                     const InputInfo &Output,
-                                    const InputInfoList &Inputs,
-                                    const ToolChain *AuxToolChain) const {
+                                    const InputInfoList &Inputs) const {
   Arg *A;
   const bool IsIAMCU = getToolChain().getTriple().isOSIAMCU();
 
@@ -566,31 +599,27 @@ void Clang::AddPreprocessingOptions(Compilation &C, const JobAction &JA,
   // OBJCPLUS_INCLUDE_PATH - system includes enabled when compiling ObjC++.
   addDirectoryList(Args, CmdArgs, "-objcxx-isystem", "OBJCPLUS_INCLUDE_PATH");
 
-  // Optional AuxToolChain indicates that we need to include headers
-  // for more than one target. If that's the case, add include paths
-  // from AuxToolChain right after include paths of the same kind for
-  // the current target.
+  // While adding the include arguments, we also attempt to retrieve the
+  // arguments of related offloading toolchains or arguments that are specific
+  // of an offloading programming model.
 
   // Add C++ include arguments, if needed.
   if (types::isCXX(Inputs[0].getType())) {
     getToolChain().AddClangCXXStdlibIncludeArgs(Args, CmdArgs);
-    if (AuxToolChain)
-      AuxToolChain->AddClangCXXStdlibIncludeArgs(Args, CmdArgs);
+    addExtraOffloadCXXStdlibIncludeArgs(C, JA, Args, CmdArgs);
   }
 
   // Add system include arguments for all targets but IAMCU.
   if (!IsIAMCU) {
     getToolChain().AddClangSystemIncludeArgs(Args, CmdArgs);
-    if (AuxToolChain)
-      AuxToolChain->AddClangCXXStdlibIncludeArgs(Args, CmdArgs);
+    addExtraOffloadCXXStdlibIncludeArgs(C, JA, Args, CmdArgs);
   } else {
     // For IAMCU add special include arguments.
     getToolChain().AddIAMCUIncludeArgs(Args, CmdArgs);
   }
 
-  // Add CUDA include arguments, if needed.
-  if (types::isCuda(Inputs[0].getType()))
-    getToolChain().AddCudaIncludeArgs(Args, CmdArgs);
+  // Add offload include arguments, if needed.
+  addExtraOffloadSpecificIncludeArgs(C, JA, Args, CmdArgs);
 }
 
 // FIXME: Move to target hook.
@@ -3249,6 +3278,33 @@ static bool addSanitizerRuntimes(const ToolChain &TC, const ArgList &Args,
   return !StaticRuntimes.empty();
 }
 
+static bool addXRayRuntime(const ToolChain &TC, const ArgList &Args,
+                           ArgStringList &CmdArgs) {
+  if (Args.hasFlag(options::OPT_fxray_instrument,
+                   options::OPT_fnoxray_instrument, false)) {
+    CmdArgs.push_back("-whole-archive");
+    CmdArgs.push_back(TC.getCompilerRTArgString(Args, "xray", false));
+    CmdArgs.push_back("-no-whole-archive");
+    return true;
+  }
+  return false;
+}
+
+static void linkXRayRuntimeDeps(const ToolChain &TC, const ArgList &Args,
+                                ArgStringList &CmdArgs) {
+  CmdArgs.push_back("--no-as-needed");
+  CmdArgs.push_back("-lpthread");
+  CmdArgs.push_back("-lrt");
+  CmdArgs.push_back("-lm");
+  CmdArgs.push_back("-latomic");
+  if (TC.GetCXXStdlibType(Args) == ToolChain::CST_Libcxx)
+    CmdArgs.push_back("-lc++");
+  else
+    CmdArgs.push_back("-lstdc++");
+  if (TC.getTriple().getOS() != llvm::Triple::FreeBSD)
+    CmdArgs.push_back("-ldl");
+}
+
 static bool areOptimizationsEnabled(const ArgList &Args) {
   // Find the last -O arg and see if it is non-zero.
   if (Arg *A = Args.getLastArg(options::OPT_O_Group))
@@ -3270,7 +3326,7 @@ static bool shouldUseFramePointerForTarget(const ArgList &Args,
     break;
   }
 
-  if (Triple.isOSLinux()) {
+  if (Triple.isOSLinux() || Triple.getOS() == llvm::Triple::CloudABI) {
     switch (Triple.getArch()) {
     // Don't use a frame pointer on linux if optimizing for certain targets.
     case llvm::Triple::mips64:
@@ -3541,15 +3597,26 @@ VersionTuple visualstudio::getMSVCVersion(const Driver *D, const ToolChain &TC,
 static void addPGOAndCoverageFlags(Compilation &C, const Driver &D,
                                    const InputInfo &Output, const ArgList &Args,
                                    ArgStringList &CmdArgs) {
+
+  auto *PGOGenerateArg = Args.getLastArg(options::OPT_fprofile_generate,
+                                         options::OPT_fprofile_generate_EQ,
+                                         options::OPT_fno_profile_generate);
+  if (PGOGenerateArg &&
+      PGOGenerateArg->getOption().matches(options::OPT_fno_profile_generate))
+    PGOGenerateArg = nullptr;
+
   auto *ProfileGenerateArg = Args.getLastArg(
       options::OPT_fprofile_instr_generate,
-      options::OPT_fprofile_instr_generate_EQ, options::OPT_fprofile_generate,
-      options::OPT_fprofile_generate_EQ,
+      options::OPT_fprofile_instr_generate_EQ,
       options::OPT_fno_profile_instr_generate);
   if (ProfileGenerateArg &&
       ProfileGenerateArg->getOption().matches(
           options::OPT_fno_profile_instr_generate))
     ProfileGenerateArg = nullptr;
+
+  if (PGOGenerateArg && ProfileGenerateArg)
+    D.Diag(diag::err_drv_argument_not_allowed_with)
+        << PGOGenerateArg->getSpelling() << ProfileGenerateArg->getSpelling();
 
   auto *ProfileUseArg = Args.getLastArg(
       options::OPT_fprofile_instr_use, options::OPT_fprofile_instr_use_EQ,
@@ -3558,6 +3625,10 @@ static void addPGOAndCoverageFlags(Compilation &C, const Driver &D,
   if (ProfileUseArg &&
       ProfileUseArg->getOption().matches(options::OPT_fno_profile_instr_use))
     ProfileUseArg = nullptr;
+
+  if (PGOGenerateArg && ProfileUseArg)
+    D.Diag(diag::err_drv_argument_not_allowed_with)
+        << ProfileUseArg->getSpelling() << PGOGenerateArg->getSpelling();
 
   if (ProfileGenerateArg && ProfileUseArg)
     D.Diag(diag::err_drv_argument_not_allowed_with)
@@ -3568,15 +3639,19 @@ static void addPGOAndCoverageFlags(Compilation &C, const Driver &D,
             options::OPT_fprofile_instr_generate_EQ))
       CmdArgs.push_back(Args.MakeArgString(Twine("-fprofile-instrument-path=") +
                                            ProfileGenerateArg->getValue()));
-    else if (ProfileGenerateArg->getOption().matches(
-                 options::OPT_fprofile_generate_EQ)) {
-      SmallString<128> Path(ProfileGenerateArg->getValue());
+    // The default is to use Clang Instrumentation.
+    CmdArgs.push_back("-fprofile-instrument=clang");
+  }
+
+  if (PGOGenerateArg) {
+    CmdArgs.push_back("-fprofile-instrument=llvm");
+    if (PGOGenerateArg->getOption().matches(
+            options::OPT_fprofile_generate_EQ)) {
+      SmallString<128> Path(PGOGenerateArg->getValue());
       llvm::sys::path::append(Path, "default.profraw");
       CmdArgs.push_back(
           Args.MakeArgString(Twine("-fprofile-instrument-path=") + Path));
     }
-    // The default is to use Clang Instrumentation.
-    CmdArgs.push_back("-fprofile-instrument=clang");
   }
 
   if (ProfileUseArg) {
@@ -3840,7 +3915,7 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   // CUDA compilation may have multiple inputs (source file + results of
   // device-side compilations). All other jobs are expected to have exactly one
   // input.
-  bool IsCuda = types::isCuda(Input.getType());
+  bool IsCuda = JA.isOffloading(Action::OFK_Cuda);
   assert((IsCuda || Inputs.size() == 1) && "Unable to handle multiple inputs.");
 
   // C++ is not supported for IAMCU.
@@ -3856,21 +3931,21 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   CmdArgs.push_back("-triple");
   CmdArgs.push_back(Args.MakeArgString(TripleStr));
 
-  const ToolChain *AuxToolChain = nullptr;
   if (IsCuda) {
-    // FIXME: We need a (better) way to pass information about
-    // particular compilation pass we're constructing here. For now we
-    // can check which toolchain we're using and pick the other one to
-    // extract the triple.
-    if (&getToolChain() == C.getSingleOffloadToolChain<Action::OFK_Cuda>())
-      AuxToolChain = C.getOffloadingHostToolChain();
-    else if (&getToolChain() == C.getOffloadingHostToolChain())
-      AuxToolChain = C.getSingleOffloadToolChain<Action::OFK_Cuda>();
+    // We have to pass the triple of the host if compiling for a CUDA device and
+    // vice-versa.
+    std::string NormalizedTriple;
+    if (JA.isDeviceOffloading(Action::OFK_Cuda))
+      NormalizedTriple = C.getSingleOffloadToolChain<Action::OFK_Host>()
+                             ->getTriple()
+                             .normalize();
     else
-      llvm_unreachable("Can't figure out CUDA compilation mode.");
-    assert(AuxToolChain != nullptr && "No aux toolchain.");
+      NormalizedTriple = C.getSingleOffloadToolChain<Action::OFK_Cuda>()
+                             ->getTriple()
+                             .normalize();
+
     CmdArgs.push_back("-aux-triple");
-    CmdArgs.push_back(Args.MakeArgString(AuxToolChain->getTriple().str()));
+    CmdArgs.push_back(Args.MakeArgString(NormalizedTriple));
   }
 
   if (Triple.isOSWindows() && (Triple.getArch() == llvm::Triple::arm ||
@@ -4566,8 +4641,8 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
                                options::OPT_gdwarf_4, options::OPT_gdwarf_5))
     DwarfVersion = DwarfVersionNum(A->getSpelling());
 
-  // Forward -gcodeview.
-  // 'EmitCodeView might have been set by CL-compatibility argument parsing.
+  // Forward -gcodeview. EmitCodeView might have been set by CL-compatibility
+  // argument parsing.
   if (Args.hasArg(options::OPT_gcodeview) || EmitCodeView) {
     // DwarfVersion remains at 0 if no explicit choice was made.
     CmdArgs.push_back("-gcodeview");
@@ -4654,6 +4729,17 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back("-fno-unique-section-names");
 
   Args.AddAllArgs(CmdArgs, options::OPT_finstrument_functions);
+
+  if (Args.hasFlag(options::OPT_fxray_instrument,
+                   options::OPT_fnoxray_instrument, false)) {
+    CmdArgs.push_back("-fxray-instrument");
+    if (const Arg *A =
+            Args.getLastArg(options::OPT_fxray_instruction_threshold_,
+                            options::OPT_fxray_instruction_threshold_EQ)) {
+      CmdArgs.push_back("-fxray-instruction-threshold");
+      CmdArgs.push_back(A->getValue());
+    }
+  }
 
   addPGOAndCoverageFlags(C, D, Output, Args, CmdArgs);
 
@@ -4753,8 +4839,7 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   //
   // FIXME: Support -fpreprocessed
   if (types::getPreprocessedType(InputType) != types::TY_INVALID)
-    AddPreprocessingOptions(C, JA, D, Args, CmdArgs, Output, Inputs,
-                            AuxToolChain);
+    AddPreprocessingOptions(C, JA, D, Args, CmdArgs, Output, Inputs);
 
   // Don't warn about "clang -c -DPIC -fPIC test.i" because libtool.m4 assumes
   // that "The compiler can only warn and ignore the option if not recognized".
@@ -5008,9 +5093,13 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   Args.AddLastArg(CmdArgs, options::OPT_fdiagnostics_show_template_tree);
   Args.AddLastArg(CmdArgs, options::OPT_fno_elide_type);
 
-  // Forward flags for OpenMP
+  // Forward flags for OpenMP. We don't do this if the current action is an
+  // device offloading action.
+  //
+  // TODO: Allow OpenMP offload actions when they become available.
   if (Args.hasFlag(options::OPT_fopenmp, options::OPT_fopenmp_EQ,
-                   options::OPT_fno_openmp, false)) {
+                   options::OPT_fno_openmp, false) &&
+      JA.isDeviceOffloading(Action::OFK_None)) {
     switch (getOpenMPRuntime(getToolChain(), Args)) {
     case OMPRT_OMP:
     case OMPRT_IOMP5:
@@ -6342,9 +6431,10 @@ void Clang::AddClangCLArgs(const ArgList &Args, types::ID InputType,
     CmdArgs.push_back(Args.MakeArgString(Twine(LangOptions::SSPStrong)));
   }
 
-  // Emit CodeView if -Z7 or -Zd are present.
+  // Emit CodeView if -Z7, -Zd, or -gline-tables-only are present.
   if (Arg *DebugInfoArg =
-          Args.getLastArg(options::OPT__SLASH_Z7, options::OPT__SLASH_Zd)) {
+          Args.getLastArg(options::OPT__SLASH_Z7, options::OPT__SLASH_Zd,
+                          options::OPT_gline_tables_only)) {
     *EmitCodeView = true;
     if (DebugInfoArg->getOption().matches(options::OPT__SLASH_Z7))
       *DebugInfoKind = codegenoptions::LimitedDebugInfo;
@@ -7441,11 +7531,13 @@ void cloudabi::Linker::ConstructJob(Compilation &C, const JobAction &JA,
 
   // CloudABI only supports static linkage.
   CmdArgs.push_back("-Bstatic");
-
-  // CloudABI uses Position Independent Executables exclusively.
-  CmdArgs.push_back("-pie");
   CmdArgs.push_back("--no-dynamic-linker");
-  CmdArgs.push_back("-zrelro");
+
+  // Provide PIE linker flags in case PIE is default for the architecture.
+  if (ToolChain.isPIEDefault()) {
+    CmdArgs.push_back("-pie");
+    CmdArgs.push_back("-zrelro");
+  }
 
   CmdArgs.push_back("--eh-frame-hdr");
   CmdArgs.push_back("--gc-sections");
@@ -7618,23 +7710,23 @@ void darwin::Linker::AddLinkArgs(Compilation &C, const ArgList &Args,
       CmdArgs.push_back("-object_path_lto");
       CmdArgs.push_back(TmpPath);
     }
+  }
 
-    // Use -lto_library option to specify the libLTO.dylib path. Try to find
-    // it in clang installed libraries. If not found, the option is not used
-    // and 'ld' will use its default mechanism to search for libLTO.dylib.
-    if (Version[0] >= 133) {
-      // Search for libLTO in <InstalledDir>/../lib/libLTO.dylib
-      StringRef P = llvm::sys::path::parent_path(D.getInstalledDir());
-      SmallString<128> LibLTOPath(P);
-      llvm::sys::path::append(LibLTOPath, "lib");
-      llvm::sys::path::append(LibLTOPath, "libLTO.dylib");
-      if (llvm::sys::fs::exists(LibLTOPath)) {
-        CmdArgs.push_back("-lto_library");
-        CmdArgs.push_back(C.getArgs().MakeArgString(LibLTOPath));
-      } else {
-        D.Diag(diag::warn_drv_lto_libpath);
-      }
-    }
+  // Use -lto_library option to specify the libLTO.dylib path. Try to find
+  // it in clang installed libraries. ld64 will only look at this argument
+  // when it actually uses LTO, so libLTO.dylib only needs to exist at link
+  // time if ld64 decides that it needs to use LTO.
+  // Since this is passed unconditionally, ld64 will never look for libLTO.dylib
+  // next to it. That's ok since ld64 using a libLTO.dylib not matching the
+  // clang version won't work anyways.
+  if (Version[0] >= 133) {
+    // Search for libLTO in <InstalledDir>/../lib/libLTO.dylib
+    StringRef P = llvm::sys::path::parent_path(D.Dir);
+    SmallString<128> LibLTOPath(P);
+    llvm::sys::path::append(LibLTOPath, "lib");
+    llvm::sys::path::append(LibLTOPath, "libLTO.dylib");
+    CmdArgs.push_back("-lto_library");
+    CmdArgs.push_back(C.getArgs().MakeArgString(LibLTOPath));
   }
 
   // Derived from the "link" spec.
@@ -9467,6 +9559,7 @@ void gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
     CmdArgs.push_back("--no-demangle");
 
   bool NeedsSanitizerDeps = addSanitizerRuntimes(ToolChain, Args, CmdArgs);
+  bool NeedsXRayDeps = addXRayRuntime(ToolChain, Args, CmdArgs);
   AddLinkerInputs(ToolChain, Inputs, Args, CmdArgs);
   // The profile runtime also needs access to system libraries.
   getToolChain().addProfileRTLibs(Args, CmdArgs);
@@ -9492,6 +9585,9 @@ void gnutools::Linker::ConstructJob(Compilation &C, const JobAction &JA,
 
       if (NeedsSanitizerDeps)
         linkSanitizerRuntimeDeps(ToolChain, CmdArgs);
+
+      if (NeedsXRayDeps)
+        linkXRayRuntimeDeps(ToolChain, Args, CmdArgs);
 
       bool WantPthread = Args.hasArg(options::OPT_pthread) ||
                          Args.hasArg(options::OPT_pthreads);
@@ -11228,15 +11324,14 @@ void NVPTX::Assembler::ConstructJob(Compilation &C, const JobAction &JA,
       static_cast<const toolchains::CudaToolChain &>(getToolChain());
   assert(TC.getTriple().isNVPTX() && "Wrong platform");
 
-  std::vector<std::string> gpu_archs =
-      Args.getAllArgValues(options::OPT_march_EQ);
-  assert(gpu_archs.size() == 1 && "Exactly one GPU Arch required for ptxas.");
-  const std::string& gpu_arch = gpu_archs[0];
+  // Obtain architecture from the action.
+  CudaArch gpu_arch = StringToCudaArch(JA.getOffloadingArch());
+  assert(gpu_arch != CudaArch::UNKNOWN &&
+         "Device action expected to have an architecture.");
 
   // Check that our installation's ptxas supports gpu_arch.
   if (!Args.hasArg(options::OPT_no_cuda_version_check)) {
-    TC.cudaInstallation().CheckCudaVersionSupportsArch(
-        StringToCudaArch(gpu_arch));
+    TC.cudaInstallation().CheckCudaVersionSupportsArch(gpu_arch);
   }
 
   ArgStringList CmdArgs;
@@ -11280,7 +11375,7 @@ void NVPTX::Assembler::ConstructJob(Compilation &C, const JobAction &JA,
   }
 
   CmdArgs.push_back("--gpu-name");
-  CmdArgs.push_back(Args.MakeArgString(gpu_arch));
+  CmdArgs.push_back(Args.MakeArgString(CudaArchToString(gpu_arch)));
   CmdArgs.push_back("--output-file");
   CmdArgs.push_back(Args.MakeArgString(Output.getFilename()));
   for (const auto& II : Inputs)
@@ -11312,13 +11407,20 @@ void NVPTX::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   CmdArgs.push_back(Args.MakeArgString(Output.getFilename()));
 
   for (const auto& II : Inputs) {
-    auto* A = cast<const CudaDeviceAction>(II.getAction());
+    auto *A = II.getAction();
+    assert(A->getInputs().size() == 1 &&
+           "Device offload action is expected to have a single input");
+    const char *gpu_arch_str = A->getOffloadingArch();
+    assert(gpu_arch_str &&
+           "Device action expected to have associated a GPU architecture!");
+    CudaArch gpu_arch = StringToCudaArch(gpu_arch_str);
+
     // We need to pass an Arch of the form "sm_XX" for cubin files and
     // "compute_XX" for ptx.
     const char *Arch =
         (II.getType() == types::TY_PP_Asm)
-            ? CudaVirtualArchToString(VirtualArchForCudaArch(A->getGpuArch()))
-            : CudaArchToString(A->getGpuArch());
+            ? CudaVirtualArchToString(VirtualArchForCudaArch(gpu_arch))
+            : gpu_arch_str;
     CmdArgs.push_back(Args.MakeArgString(llvm::Twine("--image=profile=") +
                                          Arch + ",file=" + II.getFilename()));
   }
